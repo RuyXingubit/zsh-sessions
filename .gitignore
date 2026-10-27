@@ -1,0 +1,4 @@
+.DS_Store
+*.swp
+*~
+.zs_test_tmp/
