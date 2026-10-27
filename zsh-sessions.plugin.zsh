@@ -656,7 +656,7 @@ _zs_interactive_choose_category() {
   fi
 
   local choice=""
-  if command -v fzf >/dev/null 2>&1 && [[ -t 0 && -t 1 ]]; then
+  if (( ${ZS_NO_FZF:-0} == 0 )) && command -v fzf >/dev/null 2>&1 && [[ -t 0 && -t 1 ]]; then
     choice=$(printf "%s\n" "${options[@]}" | command fzf --height=40% --reverse --prompt="📂 Categoria da Sessão > " --header="Escolha uma categoria existente ou crie uma nova")
   else
     print -r -- "📂 Escolha uma categoria para a sessão ($ZS_SESSION_CMD_COUNT comandos):"
@@ -930,7 +930,7 @@ _zs_action_menu_for_session() {
     "🗑️  Excluir esta sessão"
   )
   local act=""
-  if command -v fzf >/dev/null 2>&1 && [[ -t 0 && -t 1 ]]; then
+  if (( ${ZS_NO_FZF:-0} == 0 )) && command -v fzf >/dev/null 2>&1 && [[ -t 0 && -t 1 ]]; then
     act=$(printf "%s\n" "${actions[@]}" | command fzf --height=40% --reverse --prompt="Ação para [$sid] > ")
   else
     printf "\n⚡ Escolha uma ação para a sessão [%s]:\n" "$sid"
@@ -959,7 +959,7 @@ _zs_action_menu_for_session() {
 
 _zs_open_tui() {
   _zs_init_storage
-  if ! command -v fzf >/dev/null 2>&1 || [[ ! -t 0 || ! -t 1 ]]; then
+  if (( ${ZS_NO_FZF:-0} == 1 )) || ! command -v fzf >/dev/null 2>&1 || [[ ! -t 0 || ! -t 1 ]]; then
     local lines
     lines=$(_zs_format_index_for_fzf "ALL" "")
     if [[ -z "$lines" ]]; then

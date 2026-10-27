@@ -198,6 +198,89 @@ hook_log=$(< "$ZS_DATA_DIR/sessions/$hook_sid.log")
 assert_contains "$hook_log" "+    port: 6380" "Hooks _zs_preexec/_zs_precmd capturam diff de edição do .yml"
 assert_not_contains "$hook_log" "minha_senha_super_secreta" "Hooks _zs_preexec/_zs_precmd mascaram senha no diff"
 
+print -P "\n%B=== 8. Testes de Truncamento de Saída Longa (ZS_MAX_OUTPUT_LINES) ===%b"
+_zs_start_new_session
+trunc_sid="$ZS_SESSION_ID"
+zs_record_exec "seq 1 120"
+trunc_log=$(< "$ZS_DATA_DIR/sessions/$trunc_sid.log")
+assert_contains "$trunc_log" "linhas omitidas" "Trunca saídas longas preservando início e fim sem lotar o disco"
+assert_contains "$trunc_log" "  │ 1" "Preserva primeiras linhas da saída"
+assert_contains "$trunc_log" "  │ 120" "Preserva últimas linhas da saída"
+
+print -P "\n%B=== 9. Testes de Categorização Inteligente (zs ai - DevOps, Git, Database, Testes) ===%b"
+_zs_start_new_session
+ai_devops_sid="$ZS_SESSION_ID"
+zs_record_exec "echo 'CONTAINER ID IMAGE' # docker ps"
+_zs_append_turn_to_log "docker ps --format '{{.Names}}'" 0 "0s" "redis-main" ""
+zs ai "$ai_devops_sid" >/dev/null
+assert_eq "DevOps" "$ZS_SESSION_CATEGORY" "zs ai classifica comandos docker/kubectl como [DevOps]"
+
+_zs_start_new_session
+ai_git_sid="$ZS_SESSION_ID"
+_zs_append_turn_to_log "git checkout -b feat/nova-rota" 0 "0s" "Switched to a new branch" ""
+zs ai "$ai_git_sid" >/dev/null
+assert_eq "Git" "$ZS_SESSION_CATEGORY" "zs ai classifica comandos git como [Git]"
+
+_zs_start_new_session
+ai_db_sid="$ZS_SESSION_ID"
+_zs_append_turn_to_log "psql -h localhost -U postgres -c 'SELECT 1'" 0 "0s" "1 row" ""
+zs ai "$ai_db_sid" >/dev/null
+assert_eq "Database" "$ZS_SESSION_CATEGORY" "zs ai classifica comandos psql/redis-cli como [Database]"
+
+print -P "\n%B=== 10. Testes de Fechamento Forçado (Cmd+W / SIGHUP) e Aviso de Sessão Pendente ===%b"
+_zs_start_new_session
+sighup_sid="$ZS_SESSION_ID"
+_zs_append_turn_to_log "curl -I https://example.com" 0 "1s" "HTTP/2 200" ""
+_zs_append_turn_to_log "grep -rn 'server_name' /tmp" 0 "1s" "" ""
+# Simula fechamento da aba no botão X / Cmd+W (zshexit sem categoria definida)
+_zs_on_zshexit
+
+# Inicia uma nova aba e verifica se o aviso de sessão sem categoria é exibido
+_zs_start_new_session
+pending_warn=$(_zs_notify_pending_categories)
+assert_contains "$pending_warn" "sem categoria" "Exibe aviso discreto ao abrir nova aba quando há sessão fechada no Cmd+W sem categoria"
+
+print -P "\n%B=== 11. Testes de Filtros (ALL, PROJECT, CATEGORY), fzf, zs status, zs show e zs rm ===%b"
+all_rows=$(_zs_format_index_for_fzf "ALL" "")
+devops_rows=$(_zs_format_index_for_fzf "CATEGORY" "DevOps")
+assert_contains "$devops_rows" "$ai_devops_sid" "Filtro por categoria retorna sessão de DevOps"
+assert_not_contains "$devops_rows" "$ai_git_sid" "Filtro por categoria exclui sessões de outras categorias"
+
+if command -v fzf >/dev/null 2>&1; then
+  fzf_filtered=$(print -r -- "$all_rows" | fzf --filter="DevOps")
+  assert_contains "$fzf_filtered" "$ai_devops_sid" "Integração real com binário fzf (--filter) filtra sessões corretamente"
+fi
+
+status_out=$(zs status)
+assert_contains "$status_out" "$ZS_SESSION_ID" "zs status exibe UUIDv7 da sessão atual"
+
+show_out=$(zs show "$active_sid")
+assert_contains "$show_out" "Ajuste de portas Redis no docker-compose" "zs show exibe título e conversa completa da sessão"
+
+zs rm "$ai_db_sid" >/dev/null
+after_rm_rows=$(_zs_format_index_for_fzf "ALL" "")
+assert_not_contains "$after_rm_rows" "$ai_db_sid" "zs rm remove sessão do índice e do disco"
+
+print -P "\n%B=== 12. Teste E2E do Interceptador de Fechamento (exit) e Menu Interativo ===%b"
+PTY_DATA_DIR="$TEST_ROOT/pty_data"
+exit_prompt_out=$(
+  export ZS_DATA_DIR="$PTY_DATA_DIR"
+  export ZS_NO_FZF=1
+  _zs_start_new_session
+  e2e_sid="$ZS_SESSION_ID"
+  _zs_append_turn_to_log "echo 'port: 8080' > app.yml" 0 "0s" "" "  📝 Diff em app.yml:"
+  _zs_append_turn_to_log "sed -i '' 's/8080/9090/' app.yml" 0 "0s" "" "  📝 Diff em app.yml:"
+
+  # Simula o prompt interativo acionado no fechamento (exit) escolhendo:
+  # [1] Criar nova categoria... -> "Infra-Prod"
+  _zs_interactive_choose_category "$e2e_sid" 1 <<< $'1\nInfra-Prod\n'
+)
+assert_contains "$exit_prompt_out" "Escolha uma categoria para a sessão" "Intercepta 'exit' quando a sessão não tem categoria"
+pty_cats=$(< "$PTY_DATA_DIR/categories.txt")
+pty_index=$(< "$PTY_DATA_DIR/index.tsv")
+assert_contains "$pty_cats" "Infra-Prod" "Salva nova categoria criada durante o prompt de fechamento (exit)"
+assert_contains "$pty_index" "Infra-Prod" "Vincula a sessão encerrada à nova categoria 'Infra-Prod' no índice"
+
 print -P "\n======================================================================"
 print -P "Resultado Final: %F{green}${PASS_COUNT} passaram%f | %F{red}${FAIL_COUNT} falharam%f"
 print -P "======================================================================"
