@@ -281,6 +281,16 @@ pty_index=$(< "$PTY_DATA_DIR/index.tsv")
 assert_contains "$pty_cats" "Infra-Prod" "Salva nova categoria criada durante o prompt de fechamento (exit)"
 assert_contains "$pty_index" "Infra-Prod" "Vincula a sessão encerrada à nova categoria 'Infra-Prod' no índice"
 
+print -P "\n%B=== 13. Teste Oficial do CI do Oh My Zsh (zsh -n Syntax Check) ===%b"
+COMP_PATH="${0:A:h:h}/_zs"
+if zsh -n "$PLUGIN_PATH" && zsh -n "$COMP_PATH"; then
+  print -P "%F{green}  ✓ PASS:%f zsh -n validou sintaxe de zsh-sessions.plugin.zsh e _zs sem erros"
+  (( PASS_COUNT++ )) || true
+else
+  print -P "%F{red}  ✗ FAIL:%f Erro de sintaxe em zsh -n"
+  (( FAIL_COUNT++ )) || true
+fi
+
 print -P "\n======================================================================"
 print -P "Resultado Final: %F{green}${PASS_COUNT} passaram%f | %F{red}${FAIL_COUNT} falharam%f"
 print -P "======================================================================"
