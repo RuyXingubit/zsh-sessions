@@ -27,7 +27,7 @@ typeset -gi ZS_SESSION_HAS_DIFF=0
 typeset -gi ZS_SESSION_MANUAL_META=0
 typeset -g _ZS_LAST_CMD=""
 typeset -g _ZS_ACTIVE_CMD=""
-typeset -gF _ZS_CMD_START_TS=0
+typeset -gi _ZS_CMD_START_TS=0
 typeset -g _ZS_SNAP_DIR=""
 typeset -g _ZS_CMD_OUT_FILE=""
 typeset -g _ZS_OLD_OUT=""
@@ -271,7 +271,7 @@ _zs_snapshot_files_before() {
     seen_paths[$resolved]=1
 
     # Track either existing regular files OR new file targets for editors/redirection
-    if [[ -f "$resolved" || "${tokens[1]}" == (vim|nvim|vi|nano|micro|touch|tee) ]]; then
+    if [[ -f "$resolved" || "${tokens[1]}" == (vim|nvim|vi|nano|micro|touch|tee) || ( ! -d "$resolved" && -d "${resolved:h}" && "$clean_tok" == (*.*|*/*) ) ]]; then
       if _zs_is_sensitive_file "$resolved"; then
         local mtime_before="0"
         if [[ -e "$resolved" ]]; then
@@ -462,7 +462,7 @@ _zs_preexec() {
   fi
 
   _ZS_ACTIVE_CMD="$cmd_str"
-  _ZS_CMD_START_TS="${EPOCHREALTIME:-$EPOCHSECONDS}"
+  _ZS_CMD_START_TS="${EPOCHSECONDS:-0}"
 
   # 3. Snapshot files for diff tracking
   _zs_snapshot_files_before "$cmd_str"
@@ -497,8 +497,8 @@ _zs_precmd() {
   _ZS_ACTIVE_CMD=""
 
   # 2. Calculate duration
-  local end_ts="${EPOCHREALTIME:-$EPOCHSECONDS}"
-  integer elapsed_sec=$(( int(end_ts - _ZS_CMD_START_TS) ))
+  integer end_ts="${EPOCHSECONDS:-0}"
+  integer elapsed_sec=$(( end_ts - _ZS_CMD_START_TS ))
   (( elapsed_sec < 0 )) && elapsed_sec=0
   local duration_str="${elapsed_sec}s"
 
@@ -533,7 +533,7 @@ zs_record_exec() {
     return $?
   fi
 
-  _ZS_CMD_START_TS="${EPOCHREALTIME:-$EPOCHSECONDS}"
+  _ZS_CMD_START_TS="${EPOCHSECONDS:-0}"
   _zs_snapshot_files_before "$cmd_str"
 
   local out_file=$(command mktemp "${TMPDIR:-/tmp}/zs_exec.XXXXXX" 2>/dev/null)
@@ -907,15 +907,33 @@ _zs_action_menu_for_session() {
   [[ -z "$sid" ]] && return 0
   local -a actions
   actions=(
+    "📜 Ver conversa completa (comandos, saídas e diffs)"
     "▶ Retomar esta sessão (cd + continuar conversa)"
     "📂 Mudar / Criar Categoria para esta sessão"
     "✏️  Renomear título da sessão"
     "🤖 Categorizar automaticamente (IA / Heurística)"
     "🗑️  Excluir esta sessão"
   )
-  local act
-  act=$(printf "%s\n" "${actions[@]}" | command fzf --height=35% --reverse --prompt="Ação para [$sid] > ")
+  local act=""
+  if command -v fzf >/dev/null 2>&1 && [[ -t 0 && -t 1 ]]; then
+    act=$(printf "%s\n" "${actions[@]}" | command fzf --height=40% --reverse --prompt="Ação para [$sid] > ")
+  else
+    print -r -- "\n⚡ Escolha uma ação para a sessão [$sid]:"
+    integer idx=1
+    for a in "${actions[@]}"; do
+      printf "  [%d] %s\n" "$idx" "$a"
+      (( ++idx ))
+    done
+    printf "Opção [1-%d]: " "${#actions[@]}"
+    local num
+    read -r num
+    if [[ "$num" == <-> ]] && (( num >= 1 && num <= ${#actions[@]} )); then
+      act="${actions[$num]}"
+    fi
+  fi
+
   case "$act" in
+    "📜 "*) _zs_show_session "$sid" ;;
     "▶ "*) _zs_resume_session "$sid" ;;
     "📂 "*) _zs_interactive_choose_category "$sid" 0 ;;
     "✏️ "*) _zs_rename_session "" "$sid" ;;
@@ -927,8 +945,32 @@ _zs_action_menu_for_session() {
 _zs_open_tui() {
   _zs_init_storage
   if ! command -v fzf >/dev/null 2>&1 || [[ ! -t 0 || ! -t 1 ]]; then
-    print -r -- "=== Sessões Salvas (zsh-sessions) ==="
-    _zs_format_index_for_fzf "ALL" ""
+    local lines
+    lines=$(_zs_format_index_for_fzf "ALL" "")
+    if [[ -z "$lines" ]]; then
+      print -r -- "Nenhuma sessão salva ainda. Execute comandos no terminal e use 'zs'!"
+      return 0
+    fi
+    print -P "%B=== 💬 Sessões de Terminal (zsh-sessions) ===%b"
+    local -a row_list sids
+    row_list=("${(@f)lines}")
+    integer idx=1
+    local r sid display
+    for r in "${row_list[@]}"; do
+      sid="${r%%$'\t'*}"
+      display="${r#*$'\t'}"
+      sids+=("$sid")
+      printf "  [%d] %s\n" "$idx" "$display"
+      (( ++idx ))
+    done
+    if [[ -t 0 && -t 1 ]]; then
+      printf "\nSelecione o número da sessão [1-%d] (ou Enter para sair): " "${#sids[@]}"
+      local sel
+      read -r sel
+      if [[ "$sel" == <-> ]] && (( sel >= 1 && sel <= ${#sids[@]} )); then
+        _zs_action_menu_for_session "${sids[$sel]}"
+      fi
+    fi
     return 0
   fi
 

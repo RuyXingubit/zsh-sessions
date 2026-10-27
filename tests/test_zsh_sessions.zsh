@@ -183,6 +183,21 @@ assert_eq "$active_sid" "$ZS_SESSION_ID" "zs resume restaura o UUIDv7 da sessão
 assert_eq "DevOps" "$ZS_SESSION_CATEGORY" "zs resume preserva a categoria da sessão"
 assert_eq "Ajuste de portas Redis no docker-compose" "$ZS_SESSION_TITLE" "zs resume preserva o título da sessão"
 
+print -P "\n%B=== 7. Testes dos Hooks Interativos (_zs_preexec + _zs_precmd) ===%b"
+_zs_start_new_session
+hook_sid="$ZS_SESSION_ID"
+_zs_preexec "echo \"services:\n  redis:\n    port: 6379\" > $WORKSPACE_TMP/hook_test.yml"
+echo "services:\n  redis:\n    port: 6379" > "$WORKSPACE_TMP/hook_test.yml"
+_zs_precmd
+
+_zs_preexec "sed -i '' 's/6379/6380/' $WORKSPACE_TMP/hook_test.yml && echo '  password: minha_senha_super_secreta' >> $WORKSPACE_TMP/hook_test.yml"
+sed -i '' 's/6379/6380/' "$WORKSPACE_TMP/hook_test.yml" && echo '  password: minha_senha_super_secreta' >> "$WORKSPACE_TMP/hook_test.yml"
+_zs_precmd
+
+hook_log=$(< "$ZS_DATA_DIR/sessions/$hook_sid.log")
+assert_contains "$hook_log" "+    port: 6380" "Hooks _zs_preexec/_zs_precmd capturam diff de edição do .yml"
+assert_not_contains "$hook_log" "minha_senha_super_secreta" "Hooks _zs_preexec/_zs_precmd mascaram senha no diff"
+
 print -P "\n======================================================================"
 print -P "Resultado Final: %F{green}${PASS_COUNT} passaram%f | %F{red}${FAIL_COUNT} falharam%f"
 print -P "======================================================================"
