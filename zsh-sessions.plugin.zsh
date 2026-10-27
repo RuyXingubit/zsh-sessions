@@ -15,16 +15,24 @@ typeset -gi ZS_CAPTURE_OUTPUT="${ZS_CAPTURE_OUTPUT:-1}"
 typeset -gi ZS_MAX_OUTPUT_LINES="${ZS_MAX_OUTPUT_LINES:-60}"
 typeset -gi ZS_MIN_MEANINGFUL_CMDS="${ZS_MIN_MEANINGFUL_CMDS:-2}"
 
-# Internal state for active session
-typeset -g ZS_SESSION_ID=""
-typeset -g ZS_SESSION_CATEGORY=""
-typeset -g ZS_SESSION_TITLE=""
-typeset -g ZS_SESSION_PROJECT=""
-typeset -g ZS_SESSION_CREATED_AT=""
-typeset -gi ZS_SESSION_CMD_COUNT=0
-typeset -gi ZS_SESSION_MEANINGFUL_COUNT=0
-typeset -gi ZS_SESSION_HAS_DIFF=0
-typeset -gi ZS_SESSION_MANUAL_META=0
+# Heal stdout/stderr if re-sourced while redirection was active
+if (( ${_ZS_REDIRECT_ACTIVE:-0} == 1 )) && [[ -n "${_ZS_OLD_OUT:-}" ]]; then
+  exec 1>&$_ZS_OLD_OUT 2>&$_ZS_OLD_ERR 2>/dev/null
+  exec {_ZS_OLD_OUT}>&- {_ZS_OLD_ERR}>&- 2>/dev/null
+elif [[ -o interactive && ! -t 1 && -w /dev/tty ]]; then
+  exec 1>/dev/tty 2>/dev/tty 2>/dev/null
+fi
+
+# Internal state for active session (preserve if already active in current shell)
+typeset -g ZS_SESSION_ID="${ZS_SESSION_ID:-}"
+typeset -g ZS_SESSION_CATEGORY="${ZS_SESSION_CATEGORY:-}"
+typeset -g ZS_SESSION_TITLE="${ZS_SESSION_TITLE:-}"
+typeset -g ZS_SESSION_PROJECT="${ZS_SESSION_PROJECT:-}"
+typeset -g ZS_SESSION_CREATED_AT="${ZS_SESSION_CREATED_AT:-}"
+typeset -gi ZS_SESSION_CMD_COUNT="${ZS_SESSION_CMD_COUNT:-0}"
+typeset -gi ZS_SESSION_MEANINGFUL_COUNT="${ZS_SESSION_MEANINGFUL_COUNT:-0}"
+typeset -gi ZS_SESSION_HAS_DIFF="${ZS_SESSION_HAS_DIFF:-0}"
+typeset -gi ZS_SESSION_MANUAL_META="${ZS_SESSION_MANUAL_META:-0}"
 typeset -g _ZS_LAST_CMD=""
 typeset -g _ZS_ACTIVE_CMD=""
 typeset -gi _ZS_CMD_START_TS=0
@@ -453,10 +461,14 @@ _zs_preexec() {
     return 0
   fi
 
-  # 2. Skip internal zs commands or exit
+  # 2. Skip internal zs commands, exit, or single-line plugin reload
   local trimmed="${cmd_str#"${cmd_str%%[![:space:]]*}"}"
   local first_word="${trimmed%%[[:space:]]*}"
   if [[ "$first_word" == "zs" || "$first_word" == "exit" || "$first_word" == "logout" ]]; then
+    _ZS_ACTIVE_CMD=""
+    return 0
+  fi
+  if [[ ( "$first_word" == "source" || "$first_word" == "." ) && "$trimmed" != *$'\n'* ]]; then
     _ZS_ACTIVE_CMD=""
     return 0
   fi
@@ -926,7 +938,7 @@ _zs_action_menu_for_session() {
     done
     printf "Opção [1-%d]: " "${#actions[@]}"
     local num
-    read -r num
+    read -r num < /dev/tty
     if [[ "$num" == <-> ]] && (( num >= 1 && num <= ${#actions[@]} )); then
       act="${actions[$num]}"
     fi
@@ -963,10 +975,10 @@ _zs_open_tui() {
       printf "  [%d] %s\n" "$idx" "$display"
       (( ++idx ))
     done
-    if [[ -t 0 && -t 1 ]]; then
+    if [[ -o interactive && -r /dev/tty ]]; then
       printf "\nSelecione o número da sessão [1-%d] (ou Enter para sair): " "${#sids[@]}"
       local sel
-      read -r sel
+      read -r sel < /dev/tty
       if [[ "$sel" == <-> ]] && (( sel >= 1 && sel <= ${#sids[@]} )); then
         _zs_action_menu_for_session "${sids[$sel]}"
       fi
@@ -1065,6 +1077,10 @@ _zs_open_tui() {
 # 11. Main CLI Dispatcher: `zs`
 # ------------------------------------------------------------------------------
 zs() {
+  # If invoked inside a multi-line paste after other commands, flush pending capture first
+  if (( _ZS_REDIRECT_ACTIVE == 1 )) || [[ -n "$_ZS_ACTIVE_CMD" ]]; then
+    _zs_precmd
+  fi
   local subcmd="${1:-ui}"
   (( $# > 0 )) && shift
 
