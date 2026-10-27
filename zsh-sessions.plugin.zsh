@@ -161,6 +161,7 @@ _zs_is_interactive_tui() {
 }
 
 _zs_should_keep_session() {
+  (( ZS_SESSION_CMD_COUNT == 0 )) && return 1
   if (( ZS_SESSION_MANUAL_META == 1 )); then
     return 0
   fi
@@ -340,7 +341,8 @@ _zs_collect_diffs_after() {
     fi
     if [[ -f "$filepath" && -f "$snap_file" ]]; then
       if ! command cmp -s "$snap_file" "$filepath" 2>/dev/null; then
-        raw_diff=$( (command diff -u --label "a/${rel_name}" --label "b/${rel_name}" "$snap_file" "$filepath" 2>/dev/null || true) | _zs_redact_text )
+        local clean_label="${rel_name#/}"
+        raw_diff=$( (command diff -u --label "a/${clean_label}" --label "b/${clean_label}" "$snap_file" "$filepath" 2>/dev/null || true) | _zs_redact_text )
         if [[ -n "$raw_diff" ]]; then
           ZS_SESSION_HAS_DIFF=1
           diff_output+="  📝 Diff em ${rel_name}:"$'\n'
@@ -408,7 +410,7 @@ _zs_append_turn_to_log() {
     printf "[%s] %s%s \$ %s (exit: %d | %s)\n" \
       "$ts_hms" "$short_pwd" "$branch_tag" "$safe_cmd" "$exit_code" "$duration_str"
 
-    if [[ -n "$cmd_output" ]]; then
+    if [[ -n "${cmd_output//[[:space:]]/}" ]]; then
       local safe_out=$(print -r -- "$cmd_output" | _zs_redact_text)
       local -a out_lines
       out_lines=("${(@f)safe_out}")
@@ -907,6 +909,7 @@ _zs_format_index_for_fzf() {
 
   command awk -F'\t' -v mode="$filter_mode" -v val="$filter_val" '
     {
+      if ($7 + 0 <= 0) next;
       if (mode == "PROJECT" && $5 != val) next;
       if (mode == "CATEGORY" && $4 != val) next;
       printf "%s\t%-16s  [%-14s]  %-14s  %-42s (%s cmds)\n", $1, $3, $4, $5, $9, $7
@@ -930,7 +933,7 @@ _zs_action_menu_for_session() {
   if command -v fzf >/dev/null 2>&1 && [[ -t 0 && -t 1 ]]; then
     act=$(printf "%s\n" "${actions[@]}" | command fzf --height=40% --reverse --prompt="Ação para [$sid] > ")
   else
-    print -r -- "\n⚡ Escolha uma ação para a sessão [$sid]:"
+    printf "\n⚡ Escolha uma ação para a sessão [%s]:\n" "$sid"
     integer idx=1
     for a in "${actions[@]}"; do
       printf "  [%d] %s\n" "$idx" "$a"
