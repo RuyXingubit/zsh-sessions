@@ -20,6 +20,7 @@ _zs() {
   )
 
   _arguments -C \
+    '(-h --help)'{-h,--help}'[Display complete help guide with examples]' \
     '1: :->subcmd' \
     '*:: :->args'
 

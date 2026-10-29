@@ -35,7 +35,7 @@ Every interactive shell session automatically receives a chronological **UUIDv7*
 | `zs cat set "<cat>" [id]` | Assign a category to the current or specified session |
 | `zs ai [id]` | Auto-categorize and title a session (uses `GEMINI_API_KEY` if set, or local heuristics) |
 | `zs rm <id>` | Delete a saved session |
-| `zs help` | Display help information |
+| `zs -h`, `zs --help`, `zs help` | Display complete help guide with all commands, shortcuts, and practical examples |
 
 ## Keyboard Shortcuts (inside `zs` / `fzf`)
 
