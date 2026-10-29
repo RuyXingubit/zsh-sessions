@@ -52,6 +52,163 @@ All shortcuts use portable POSIX/ASCII control codes that work identically acros
 | <kbd>Ctrl</kbd> + <kbd>X</kbd> | Delete the selected session |
 | <kbd>Ctrl</kbd> + <kbd>U</kbd> / <kbd>Ctrl</kbd> + <kbd>D</kbd> | Scroll the right-hand conversation preview up / down |
 
+## Examples
+
+### 1. Daily Workflow Examples
+
+```zsh
+# Example 1: Open the interactive split-view TUI to browse, search, or resume sessions
+zs
+
+# Example 2: Create your custom work categories
+zs cat add "Networks & Routers"
+zs cat add "DevOps & Docker"
+zs cat add "Backups"
+
+# Example 3: List all categories and check session counts
+zs cat list
+
+# Example 4: Categorize your current active session interactively or directly
+zs cat
+zs cat set "Networks & Routers"
+
+# Example 5: Set a clear, memorable title for the current session
+zs rename "Backup S6730 switches and M4 router"
+
+# Example 6: Inspect current session metadata or view the full conversation & file diffs
+zs status
+zs show
+
+# Example 7: Auto-categorize and title the current session using AI / heuristics
+zs ai
+
+# Example 8: Run a sensitive command WITHOUT recording it (prefix with a leading space)
+ export SECRET_TOKEN="my-private-token"
+```
+
+### 2. Sample Output: `zs show` (Commands, Output & File Diffs with Secret Redaction)
+
+```text
+➜  ~ echo "services:\n  redis:\n    port: 6379" > /tmp/teste.yml
+➜  ~ sed -i '' 's/6379/6380/' /tmp/teste.yml && echo "  password: my_super_secret_password" >> /tmp/teste.yml
+➜  ~ zs show
+======================================================================
+ID: 01a17b3d-2e19-7066-8611-74346f108cb4 | Data: 2026-10-26 23:43 | Categoria: [DevOps & Docker] | Projeto: ruy | Cmds: 2
+Título: Backup S6730 switches and M4 router
+Última pasta: /Users/ruy
+======================================================================
+[23:42:54] ~ $ echo "services:\n  redis:\n    port: 6379" > /tmp/teste.yml (exit: 0 | 0s)
+
+[23:43:02] ~ $ sed -i '' 's/6379/6380/' /tmp/teste.yml && echo "  password: [REDACTED] >> /tmp/teste.yml (exit: 0 | 0s)
+  📝 Diff em /tmp/teste.yml:
+    --- a/tmp/teste.yml
+    +++ b/tmp/teste.yml
+    @@ -1,3 +1,4 @@
+     services:
+       redis:
+    -    port: 6379
+    +    port: 6380
+    +  password: [REDACTED]
+```
+
+### 3. Built-in Help Guide (`zs -h` / `zs --help`)
+
+Run `zs -h` (or `zs --help` / `zs help`) at any time to display the complete reference guide directly in the terminal:
+
+<details>
+<summary>View full <code>zs -h</code> output</summary>
+
+```text
+================================================================================
+💬 zs (zsh-sessions) — Gerenciador de Sessões/Conversas de Terminal (Oh My Zsh)
+================================================================================
+
+USO:
+  zs [comando] [argumentos]
+  zs -h | --help | help
+
+--------------------------------------------------------------------------------
+1. COMANDOS PRINCIPAIS
+--------------------------------------------------------------------------------
+  zs                         Abre o painel interativo (tela dividida com fzf)
+  zs -h, zs --help, zs help  Exibe este guia completo com todos os exemplos
+  zs status                  Mostra os dados da sessão atual (UUIDv7, pasta,
+                             categoria, título, quantidade de comandos e diffs)
+  zs show [session_id]       Exibe a conversa completa (comandos, saídas e diffs
+                             coloridos) da sessão atual ou do ID informado
+  zs resume <session_id>     Retoma uma sessão anterior (faz 'cd' para a última
+                             pasta da sessão e continua gravando na mesma thread)
+  zs rename "<título>" [id]  Altera o título da sessão atual (ou do ID informado)
+  zs rm <session_id>         Remove permanentemente uma sessão salva
+
+--------------------------------------------------------------------------------
+2. GESTÃO DE CATEGORIAS (100% Manual ou com IA)
+--------------------------------------------------------------------------------
+  zs cat                     Abre o menu interativo para classificar a sessão
+                             atual em uma categoria existente ou criar uma nova
+  zs cat add "<nome>"        Cria uma nova categoria (ex.: DevOps, Rede, Bugfix)
+  zs cat list                Lista todas as categorias e quantas sessões há nelas
+  zs cat set "<cat>" [id]    Atribui diretamente uma categoria à sessão atual
+                             (ou à sessão do ID informado)
+  zs ai [session_id]         Classifica e gera título automaticamente usando IA
+                             (se GEMINI_API_KEY estiver definida) ou heurística
+
+--------------------------------------------------------------------------------
+3. ATALHOS DENTRO DO PAINEL INTERATIVO (fzf)
+--------------------------------------------------------------------------------
+  Enter       Retoma a sessão selecionada (entra na pasta e continua a conversa)
+  Tab         Abre o Menu de Ações (Ver, Retomar, Categoria, Renomear, IA, Excluir)
+  Ctrl + T    Mudar ou criar uma Categoria para a sessão selecionada
+  Ctrl + R    Renomear o título da sessão selecionada
+  Ctrl + F    Alternar filtro (Todas -> Projeto Atual -> Filtrar por Categoria)
+  Ctrl + A    Classificar automaticamente com IA / Heurística
+  Ctrl + X    Excluir a sessão selecionada
+  Ctrl + U/D  Rolar a conversa (painel da direita) para cima / para baixo
+  Esc / ^C    Sair do painel sem fazer alterações
+
+--------------------------------------------------------------------------------
+4. EXEMPLOS PRÁTICOS DO DIA A DIA
+--------------------------------------------------------------------------------
+  # Exemplo 1: Abrir o painel visual para procurar e retomar uma sessão antiga
+  zs
+
+  # Exemplo 2: Criar suas categorias de trabalho habituais
+  zs cat add "Rede & Roteadores"
+  zs cat add "DevOps & Docker"
+  zs cat add "Backups"
+
+  # Exemplo 3: Listar todas as suas categorias e ver sessões pendentes
+  zs cat list
+
+  # Exemplo 4: Classificar a sessão que você está usando agora
+  zs cat
+  # (ou diretamente):
+  zs cat set "Rede & Roteadores"
+
+  # Exemplo 5: Dar um nome fácil de lembrar para a sessão atual
+  zs rename "Backup dos switches S6730 e roteador M4"
+
+  # Exemplo 6: Ver todo o histórico (comandos, saídas e diffs .yml) da aba atual
+  zs show
+
+  # Exemplo 7: Pedir para a IA categorizar e dar título para a sessão atual
+  zs ai
+
+  # Exemplo 8: Executar um comando sensível SEM gravar na sessão (espaço antes)
+   export MINHA_SENHA="123"   # (com um espaço em branco no início da linha)
+
+--------------------------------------------------------------------------------
+5. VARIÁVEIS DE CONFIGURAÇÃO (no seu ~/.zshrc)
+--------------------------------------------------------------------------------
+  export ZS_CAPTURE_OUTPUT=1        # 1 = grava saídas stdout/stderr; 0 = só comandos e diffs
+  export ZS_MAX_OUTPUT_LINES=60     # Máximo de linhas de saída salvas por comando
+  export ZS_MIN_MEANINGFUL_CMDS=2   # Mínimo de comandos relevantes (Regra Zero Lixo)
+  export ZS_BINDKEY="^G"            # Atalho opcional (ex: Ctrl+G) para abrir o 'zs'
+================================================================================
+```
+
+</details>
+
 ## Security & Privacy
 
 * **Strict File Permissions:** Session storage is created with `0700` directory permissions and `0600` file permissions.
