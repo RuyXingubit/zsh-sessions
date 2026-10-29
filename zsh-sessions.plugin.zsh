@@ -15,12 +15,11 @@ typeset -gi ZS_CAPTURE_OUTPUT="${ZS_CAPTURE_OUTPUT:-1}"
 typeset -gi ZS_MAX_OUTPUT_LINES="${ZS_MAX_OUTPUT_LINES:-60}"
 typeset -gi ZS_MIN_MEANINGFUL_CMDS="${ZS_MIN_MEANINGFUL_CMDS:-2}"
 
-# Heal stdout/stderr if re-sourced while redirection was active
-if (( ${_ZS_REDIRECT_ACTIVE:-0} == 1 )) && [[ -n "${_ZS_OLD_OUT:-}" ]]; then
-  exec 1>&$_ZS_OLD_OUT 2>&$_ZS_OLD_ERR 2>/dev/null
-  exec {_ZS_OLD_OUT}>&- {_ZS_OLD_ERR}>&- 2>/dev/null
-elif [[ -o interactive && ! -t 1 && -w /dev/tty ]]; then
-  exec 1>/dev/tty 2>/dev/tty 2>/dev/null
+# Always guarantee stdout/stderr are connected to /dev/tty in interactive shells
+if [[ -o interactive && -w /dev/tty ]]; then
+  if (( ${_ZS_REDIRECT_ACTIVE:-0} == 1 )) || [[ ! -t 1 || ! -t 2 ]]; then
+    exec 1>/dev/tty 2>/dev/tty 2>/dev/null
+  fi
 fi
 
 # Internal state for active session (preserve if already active in current shell)
@@ -38,8 +37,6 @@ typeset -g _ZS_ACTIVE_CMD=""
 typeset -gi _ZS_CMD_START_TS=0
 typeset -g _ZS_SNAP_DIR=""
 typeset -g _ZS_CMD_OUT_FILE=""
-typeset -g _ZS_OLD_OUT=""
-typeset -g _ZS_OLD_ERR=""
 typeset -gi _ZS_REDIRECT_ACTIVE=0
 typeset -ga _ZS_TRACKED_FILES=()
 typeset -ga _ZS_SENSITIVE_TOUCHED=()
@@ -47,8 +44,21 @@ typeset -ga _ZS_SENSITIVE_TOUCHED=()
 zmodload zsh/datetime 2>/dev/null
 zmodload zsh/stat 2>/dev/null
 
+# Fast pure-Zsh date formatting (0 forks)
+_zs_now_ymd_hm() {
+  local out=""
+  strftime -s out "%Y-%m-%d %H:%M" "${EPOCHSECONDS:-0}" 2>/dev/null || out="$(command date "+%Y-%m-%d %H:%M")"
+  print -r -- "$out"
+}
+
+_zs_now_hms() {
+  local out=""
+  strftime -s out "%H:%M:%S" "${EPOCHSECONDS:-0}" 2>/dev/null || out="$(command date "+%H:%M:%S")"
+  print -r -- "$out"
+}
+
 # ------------------------------------------------------------------------------
-# 1. Storage Initialization (0700 / 0600 permissions)
+# 1. Storage Initialization (0700 / 0600 permissions, zero-fork fast path)
 # ------------------------------------------------------------------------------
 _zs_init_storage() {
   if [[ ! -d "$ZS_DATA_DIR/sessions" ]]; then
@@ -68,11 +78,11 @@ _zs_init_storage() {
 }
 
 # ------------------------------------------------------------------------------
-# 2. RFC 9562 UUIDv7 Generator (48-bit unix_ts_ms + ver 7 + variant 10xx + rand)
+# 2. RFC 9562 UUIDv7 Generator (0-fork pure Zsh fast implementation)
 # ------------------------------------------------------------------------------
 _zs_uuidv7() {
   setopt LOCAL_OPTIONS NO_OCTAL_ZEROES
-  local ts_sec="${EPOCHSECONDS:-$(command date +%s)}"
+  local ts_sec="${EPOCHSECONDS:-0}"
   local ts_ms_part="000"
   if [[ -n "$EPOCHREALTIME" && "$EPOCHREALTIME" == *.* ]]; then
     local frac="${EPOCHREALTIME#*.}"
@@ -83,10 +93,7 @@ _zs_uuidv7() {
   integer lo16=$(( total_ms & 0xFFFF ))
 
   local rand_hex
-  rand_hex=$(LC_ALL=C command od -An -tx1 -N10 /dev/urandom 2>/dev/null | command tr -d ' \n')
-  if [[ ${#rand_hex} -lt 20 ]]; then
-    rand_hex=$(printf "%04x%04x%04x%04x%04x" $RANDOM $RANDOM $RANDOM $RANDOM $RANDOM)
-  fi
+  rand_hex=$(printf "%04x%04x%04x%04x%04x" $((RANDOM % 65536)) $((RANDOM % 65536)) $((RANDOM % 65536)) $((RANDOM % 65536)) $((RANDOM % 65536)))
 
   local ver_rand="${rand_hex[1,3]}"
   integer var_nibble=$(( (16#${rand_hex[4]} & 0x3) | 0x8 ))
@@ -117,7 +124,7 @@ _zs_is_sensitive_file() {
 _zs_redact_text() {
   LC_ALL=C command sed -E \
     -e 's/([A-Za-z0-9_]*([Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Pp][Aa][Ss][Ss][Ww][Dd]|[Pp][Aa][Ss][Ss]|[Pp][Ww][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn]|[Aa][Pp][Ii]_?[Kk][Ee][Yy]|[Aa][Cc][Cc][Ee][Ss][Ss]_?[Kk][Ee][Yy]|[Pp][Rr][Ii][Vv][Aa][Tt][Ee]_?[Kk][Ee][Yy]|[Aa][Uu][Tt][Hh]|[Bb][Ee][Aa][Rr][Ee][Rr]|[Dd][Aa][Tt][Aa][Bb][Aa][Ss][Ee]_[Uu][Rr][Ll]))([[:space:]]*[:=][[:space:]]*)(['\''"]?[^][:space:]"'\'',;]+['\''"]?)/\1\3[REDACTED]/g' \
-    -e 's/(--requirepass|--password|--token|--api-key|--secret|-a)[[:space:]]+("[^"]*"|'\''[^'\'']*'\''|[^[:space:]]+)/\1 [REDACTED]/g' \
+    -e 's/(--requirepass|--password|--token|--api-key|--secret|-a|-u)[[:space:]]+("[^"]*"|'\''[^'\'']*'\''|[^[:space:]]+)/\1 [REDACTED]/g' \
     -e 's/(ghp_[A-Za-z0-9_]{16,}|gho_[A-Za-z0-9_]{16,}|github_pat_[A-Za-z0-9_]{16,}|sk-[A-Za-z0-9_-]{16,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{20,})/[REDACTED]/g' \
     -e 's/eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/[REDACTED]/g' \
     -e 's#(://[^/:@[:space:]]+:)[^/@[:space:]]+@#\1[REDACTED]@#g'
@@ -132,7 +139,6 @@ _zs_is_trivial_cmd() {
   local first_word="${trimmed%%[[:space:]]*}"
   case "$first_word" in
     ""|ls|ll|la|l|cd|pwd|clear|cls|exit|logout|zs|history|whoami|date|true|false|echo)
-      # Note: echo with redirection (>) is not trivial because it modifies a file
       if [[ "$first_word" == "echo" && "$trimmed" == *">"* ]]; then
         return 1
       fi
@@ -146,17 +152,23 @@ _zs_is_interactive_tui() {
   local raw="$1"
   local trimmed="${raw#"${raw%%[![:space:]]*}"}"
   local first_word="${trimmed%%[[:space:]]*}"
-  # Strip sudo if present
   if [[ "$first_word" == "sudo" ]]; then
-    local rest="${trimmed#sudo}"
-    rest="${rest#"${rest%%[![:space:]]*}"}"
-    first_word="${rest%%[[:space:]]*}"
+    return 0
   fi
   case "$first_word" in
-    vim|nvim|vi|nano|emacs|micro|less|more|man|htop|top|btop|glances|tmux|screen|zellij|ssh|mosh|telnet|fzf|zs|exit|logout|clear|reset)
+    vim|nvim|vi|nano|emacs|micro|less|more|man|htop|top|btop|glances|mtr|watch|tmux|screen|zellij|ssh|scp|sftp|ftp|mosh|telnet|nc|netcat|expect|fzf|zs|exit|logout|clear|reset|su|gpg|pass|claude|codex|lazygit|lazydocker|k9s|tig|ranger|mc|nnn|yazi)
       return 0
       ;;
   esac
+  # Bypass scripts or compound commands that invoke interactive ssh/expect/telnet/sudo/read
+  if [[ "$trimmed" == *(ssh|telnet|expect|ftp|sudo|vim|nano|fzf)* ]]; then
+    return 0
+  fi
+  if [[ "$first_word" == (./*|*.sh) && -f "$first_word" ]]; then
+    if command grep -Eq '\b(expect|ssh|telnet|sudo|read|fzf|vim|nano)\b' "$first_word" 2>/dev/null; then
+      return 0
+    fi
+  fi
   return 1
 }
 
@@ -178,17 +190,31 @@ _zs_should_keep_session() {
 # 5. Session Metadata & Index Management
 # ------------------------------------------------------------------------------
 _zs_detect_project() {
-  local git_root
-  git_root=$(command git rev-parse --show-toplevel 2>/dev/null || true)
-  if [[ -n "$git_root" ]]; then
-    print -r -- "${git_root:t}"
-  else
-    print -r -- "${PWD:t}"
-  fi
+  local dir="$PWD"
+  while [[ -n "$dir" && "$dir" != "/" ]]; do
+    if [[ -e "$dir/.git" ]]; then
+      print -r -- "${dir:t}"
+      return 0
+    fi
+    dir="${dir:h}"
+  done
+  print -r -- "${PWD:t}"
 }
 
 _zs_detect_branch() {
-  command git rev-parse --abbrev-ref HEAD 2>/dev/null || true
+  local dir="$PWD"
+  while [[ -n "$dir" && "$dir" != "/" ]]; do
+    if [[ -f "$dir/.git/HEAD" ]]; then
+      local head_ref=$(< "$dir/.git/HEAD")
+      if [[ "$head_ref" == "ref: refs/heads/"* ]]; then
+        print -r -- "${head_ref#ref: refs/heads/}"
+      else
+        print -r -- "${head_ref[1,7]}"
+      fi
+      return 0
+    fi
+    dir="${dir:h}"
+  done
 }
 
 _zs_auto_title_from_cmd() {
@@ -203,12 +229,11 @@ _zs_auto_title_from_cmd() {
 _zs_update_index() {
   _zs_init_storage
   [[ -z "$ZS_SESSION_ID" ]] && return 0
-  local now_str=$(command date "+%Y-%m-%d %H:%M")
+  local now_str="$(_zs_now_ymd_hm)"
   [[ -z "$ZS_SESSION_CREATED_AT" ]] && ZS_SESSION_CREATED_AT="$now_str"
   local cat_val="${ZS_SESSION_CATEGORY:-Sem Categoria}"
   local proj_val="${ZS_SESSION_PROJECT:-$(_zs_detect_project)}"
   local title_val="${ZS_SESSION_TITLE:-Sessão em $proj_val}"
-  # Sanitize tabs/newlines in fields
   cat_val="${cat_val//[$'\t\n']/ }"
   proj_val="${proj_val//[$'\t\n']/ }"
   title_val="${title_val//[$'\t\n']/ }"
@@ -253,11 +278,8 @@ _zs_snapshot_files_before() {
   local cmd_str="$1"
   _ZS_TRACKED_FILES=()
   _ZS_SENSITIVE_TOUCHED=()
-  _ZS_SNAP_DIR=$(command mktemp -d "${TMPDIR:-/tmp}/zs_snap.XXXXXX" 2>/dev/null)
-  [[ -z "$_ZS_SNAP_DIR" ]] && return 0
-  command chmod 0700 "$_ZS_SNAP_DIR" 2>/dev/null
+  _ZS_SNAP_DIR=""
 
-  # Split command tokens safely
   local -a tokens
   tokens=(${(z)cmd_str})
   local -A seen_paths
@@ -265,7 +287,6 @@ _zs_snapshot_files_before() {
   integer count=0
 
   for tok in "${tokens[@]:1}"; do
-    # Skip flags unless redirection target
     [[ "$tok" == -* || "$tok" == "|" || "$tok" == "&&" || "$tok" == ";" || "$tok" == ">" || "$tok" == ">>" ]] && continue
     clean_tok="${(Q)tok}"
     [[ -z "$clean_tok" ]] && continue
@@ -279,8 +300,13 @@ _zs_snapshot_files_before() {
     [[ -n "${seen_paths[$resolved]}" ]] && continue
     seen_paths[$resolved]=1
 
-    # Track either existing regular files OR new file targets for editors/redirection
     if [[ -f "$resolved" || "${tokens[1]}" == (vim|nvim|vi|nano|micro|touch|tee) || ( ! -d "$resolved" && -d "${resolved:h}" && "$clean_tok" == (*.*|*/*) ) ]]; then
+      if [[ -z "$_ZS_SNAP_DIR" ]]; then
+        _ZS_SNAP_DIR=$(command mktemp -d "${TMPDIR:-/tmp}/zs_snap.XXXXXX" 2>/dev/null)
+        [[ -n "$_ZS_SNAP_DIR" ]] && command chmod 0700 "$_ZS_SNAP_DIR" 2>/dev/null
+      fi
+      [[ -z "$_ZS_SNAP_DIR" ]] && return 0
+
       if _zs_is_sensitive_file "$resolved"; then
         local mtime_before="0"
         if [[ -e "$resolved" ]]; then
@@ -295,7 +321,6 @@ _zs_snapshot_files_before() {
 
       local snap_file="$_ZS_SNAP_DIR/snap_${count}"
       if [[ -f "$resolved" ]]; then
-        # Only snapshot files smaller than 1MB to avoid slowing shell
         local fsize=$(command wc -c < "$resolved" 2>/dev/null | command tr -d ' ')
         if [[ "${fsize:-0}" -lt 1048576 ]]; then
           command cp -p "$resolved" "$snap_file" 2>/dev/null
@@ -313,7 +338,6 @@ _zs_collect_diffs_after() {
   local diff_output=""
   local entry filepath state snap_file rel_name raw_diff
 
-  # 1. Check sensitive files touched
   for entry in "${_ZS_SENSITIVE_TOUCHED[@]}"; do
     filepath="${entry%%:::*}"
     local old_mtime="${entry##*:::}"
@@ -328,7 +352,6 @@ _zs_collect_diffs_after() {
     fi
   done
 
-  # 2. Compute unified diffs for tracked normal files
   for entry in "${_ZS_TRACKED_FILES[@]}"; do
     filepath="${entry%%:::*}"
     local rest="${entry#*:::}"
@@ -373,7 +396,7 @@ _zs_start_new_session() {
   ZS_SESSION_CATEGORY=""
   ZS_SESSION_TITLE=""
   ZS_SESSION_PROJECT="$(_zs_detect_project)"
-  ZS_SESSION_CREATED_AT="$(command date "+%Y-%m-%d %H:%M")"
+  ZS_SESSION_CREATED_AT="$(_zs_now_ymd_hm)"
   ZS_SESSION_CMD_COUNT=0
   ZS_SESSION_MEANINGFUL_COUNT=0
   ZS_SESSION_HAS_DIFF=0
@@ -398,13 +421,18 @@ _zs_append_turn_to_log() {
     command chmod 0600 "$log_file" 2>/dev/null
   fi
 
-  local ts_hms=$(command date "+%H:%M:%S")
+  local ts_hms="$(_zs_now_hms)"
   local short_pwd="${PWD/#$HOME/~}"
-  local branch=$(_zs_detect_branch)
+  local branch="$(_zs_detect_branch)"
   local branch_tag=""
   [[ -n "$branch" ]] && branch_tag=" ($branch)"
 
   local safe_cmd=$(print -r -- "$cmd_str" | _zs_redact_text)
+
+  # Strip terminal OSC title sequences (\e]...\a or \e]...\e\\) if any leaked into output
+  if [[ -n "$cmd_output" ]]; then
+    cmd_output=$(print -r -- "$cmd_output" | LC_ALL=C command sed -E $'s/\x1b\\][^\x07\x1b]*(\x07|\x1b\\\\)//g')
+  fi
 
   {
     printf "[%s] %s%s \$ %s (exit: %d | %s)\n" \
@@ -455,8 +483,20 @@ _zs_append_turn_to_log() {
   _zs_update_index
 }
 
+_zs_restore_tty() {
+  if (( _ZS_REDIRECT_ACTIVE == 1 )); then
+    if [[ -w /dev/tty ]]; then
+      exec 1>/dev/tty 2>/dev/tty 2>/dev/null
+    fi
+    _ZS_REDIRECT_ACTIVE=0
+  fi
+}
+
 _zs_preexec() {
   local cmd_str="$1"
+  # Ensure previous redirection is always cleaned up first
+  _zs_restore_tty
+
   # 1. Respect leading space (HIST_IGNORE_SPACE)
   if [[ "$cmd_str" == [[:space:]]* ]]; then
     _ZS_ACTIVE_CMD=""
@@ -481,14 +521,13 @@ _zs_preexec() {
   # 3. Snapshot files for diff tracking
   _zs_snapshot_files_before "$cmd_str"
 
-  # 4. Capture stdout/stderr for non-interactive CLI commands
-  if (( ZS_CAPTURE_OUTPUT == 1 )) && ! _zs_is_interactive_tui "$cmd_str"; then
+  # 4. Capture stdout/stderr for non-interactive CLI commands while writing directly to /dev/tty
+  if (( ZS_CAPTURE_OUTPUT == 1 )) && [[ -w /dev/tty ]] && ! _zs_is_interactive_tui "$cmd_str"; then
     _ZS_CMD_OUT_FILE=$(command mktemp "${TMPDIR:-/tmp}/zs_out.XXXXXX" 2>/dev/null)
     if [[ -n "$_ZS_CMD_OUT_FILE" ]]; then
       command chmod 0600 "$_ZS_CMD_OUT_FILE" 2>/dev/null
       setopt LOCAL_OPTIONS NO_NOTIFY NO_MONITOR
-      exec {_ZS_OLD_OUT}>&1 {_ZS_OLD_ERR}>&2
-      exec > >(command tee -a "$_ZS_CMD_OUT_FILE") 2>&1
+      exec > >(command tee -a "$_ZS_CMD_OUT_FILE" > /dev/tty) 2>&1
       _ZS_REDIRECT_ACTIVE=1
     fi
   fi
@@ -497,12 +536,9 @@ _zs_preexec() {
 _zs_precmd() {
   local last_exit=$?
 
-  # 1. Restore stdout/stderr if redirected
+  # 1. Immediately restore stdout/stderr directly to /dev/tty
   if (( _ZS_REDIRECT_ACTIVE == 1 )); then
-    exec 1>&$_ZS_OLD_OUT 2>&$_ZS_OLD_ERR
-    exec {_ZS_OLD_OUT}>&- {_ZS_OLD_ERR}>&-
-    _ZS_REDIRECT_ACTIVE=0
-    # Brief yield so tee flushes last bytes
+    _zs_restore_tty
     command sleep 0.01 2>/dev/null
   fi
 
@@ -578,9 +614,10 @@ _zs_cat_add() {
   _zs_init_storage
   local cat_name="${1#"${1%%[![:space:]]*}"}"
   cat_name="${cat_name%"${cat_name##*[![:space:]]}"}"
-  if [[ -z "$cat_name" ]]; then
-    print -u2 "Uso: zs cat add <nome_da_categoria>"
-    return 1
+  if [[ -z "$cat_name" || "$cat_name" == "-h" || "$cat_name" == "--help" ]]; then
+    print -r -- "Uso: zs cat add \"<nome_da_categoria>\""
+    print -r -- "Exemplo: zs cat add \"DevOps\""
+    return 0
   fi
   if ! command grep -Fxq "$cat_name" "$ZS_DATA_DIR/categories.txt" 2>/dev/null; then
     print -r -- "$cat_name" >> "$ZS_DATA_DIR/categories.txt"
@@ -598,13 +635,13 @@ _zs_cat_list() {
       [[ -z "$c" ]] && continue
       local cnt=0
       if [[ -f "$ZS_DATA_DIR/index.tsv" ]]; then
-        cnt=$(command awk -F'\t' -v cat="$c" '$4 == cat { n++ } END { print n+0 }' "$ZS_DATA_DIR/index.tsv")
+        cnt=$(command awk -F'\t' -v cat="$c" '$7 + 0 > 0 && $4 == cat { n++ } END { print n+0 }' "$ZS_DATA_DIR/index.tsv")
       fi
       printf "  • %-22s (%d sessões)\n" "$c" "$cnt"
     done < "$ZS_DATA_DIR/categories.txt"
   fi
   if [[ -f "$ZS_DATA_DIR/index.tsv" ]]; then
-    local uncat=$(command awk -F'\t' '$4 == "Sem Categoria" { n++ } END { print n+0 }' "$ZS_DATA_DIR/index.tsv")
+    local uncat=$(command awk -F'\t' '$7 + 0 > 0 && $4 == "Sem Categoria" { n++ } END { print n+0 }' "$ZS_DATA_DIR/index.tsv")
     if (( uncat > 0 )); then
       printf "  • %-22s (%d sessões pendentes)\n" "[Sem Categoria]" "$uncat"
     fi
@@ -616,7 +653,7 @@ _zs_cat_set() {
   local cat_name="$1"
   local target_sid="${2:-$ZS_SESSION_ID}"
   if [[ -z "$cat_name" || -z "$target_sid" ]]; then
-    print -u2 "Uso: zs cat set <categoria> [session_id]"
+    print -u2 "Uso: zs cat set \"<categoria>\" [session_id]"
     return 1
   fi
   _zs_cat_add "$cat_name" >/dev/null
@@ -663,7 +700,7 @@ _zs_interactive_choose_category() {
     integer i=1
     for opt in "${options[@]}"; do
       printf "  [%d] %s\n" "$i" "$opt"
-      (( i++ ))
+      (( ++i ))
     done
     printf "Opção [1-%d]: " "${#options[@]}"
     local num
@@ -699,8 +736,8 @@ _zs_interactive_choose_category() {
   esac
 }
 
-# Intercepts interactive `exit` to apply Zero Lixo or ask for Category
 _zs_handle_shell_exit_prompt() {
+  _zs_restore_tty
   [[ -z "$ZS_SESSION_ID" ]] && return 0
   if ! _zs_should_keep_session; then
     _zs_remove_session_files "$ZS_SESSION_ID"
@@ -718,8 +755,8 @@ _zs_handle_shell_exit_prompt() {
   fi
 }
 
-# Trap SIGHUP / zshexit (e.g., when user closes window with Cmd+W)
 _zs_on_zshexit() {
+  _zs_restore_tty
   [[ -z "$ZS_SESSION_ID" ]] && return 0
   if ! _zs_should_keep_session; then
     _zs_remove_session_files "$ZS_SESSION_ID"
@@ -728,18 +765,23 @@ _zs_on_zshexit() {
   fi
 }
 
-# Check pending uncategorized sessions on startup
+# Zero-fork check for pending uncategorized sessions on startup
 _zs_notify_pending_categories() {
   [[ ! -f "$ZS_DATA_DIR/index.tsv" ]] && return 0
-  local pending_cnt
-  pending_cnt=$(command awk -F'\t' -v cur="$ZS_SESSION_ID" '$1 != cur && $4 == "Sem Categoria" { n++ } END { print n+0 }' "$ZS_DATA_DIR/index.tsv" 2>/dev/null)
+  integer pending_cnt=0
+  local sid c_at u_at cat proj dir cnt diff title
+  while IFS=$'\t' read -r sid c_at u_at cat proj dir cnt diff title; do
+    if [[ -n "$sid" && "$sid" != "$ZS_SESSION_ID" && "$cat" == "Sem Categoria" ]] && (( ${cnt:-0} > 0 )); then
+      (( ++pending_cnt ))
+    fi
+  done < "$ZS_DATA_DIR/index.tsv"
   if (( pending_cnt > 0 )); then
     print -P "%F{yellow}💡 [zsh-sessions] Você tem ${pending_cnt} sessão(ões) anterior(es) sem categoria. Digite %Bzs cat%b ou %Bzs%b para classificar.%f"
   fi
 }
 
 # ------------------------------------------------------------------------------
-# 9. Session Actions: Show, Rename, Resume, AI Categorize, Prune
+# 9. Session Actions: Show, Rename, Resume, AI Categorize
 # ------------------------------------------------------------------------------
 _zs_show_session() {
   local sid="${1:-$ZS_SESSION_ID}"
@@ -759,7 +801,6 @@ _zs_show_session() {
     fi
   fi
 
-  # Colorize diffs and command headers for terminal readability
   command awk '
     /^\[[0-9]{2}:[0-9]{2}:[0-9]{2}\]/ { printf "\033[1;36m%s\033[0m\n", $0; next }
     /^  📝 Diff/ { printf "\033[1;33m%s\033[0m\n", $0; next }
@@ -811,7 +852,6 @@ _zs_resume_session() {
     return 1
   fi
 
-  # Clean up current session if it was empty/trivial before switching
   if [[ -n "$ZS_SESSION_ID" && "$ZS_SESSION_ID" != "$target_sid" ]]; then
     if ! _zs_should_keep_session; then
       _zs_remove_session_files "$ZS_SESSION_ID"
@@ -858,7 +898,6 @@ _zs_ai_categorize() {
   local summary_cmds
   summary_cmds=$(command grep -E '^\[[0-9]{2}:[0-9]{2}:[0-9]{2}\]|^  📝 Diff' "$log_file" | command head -n 30 | _zs_redact_text)
 
-  # If GEMINI_API_KEY is available, call Gemini 2.5 Flash API with sanitized summary
   if [[ -n "$GEMINI_API_KEY" ]] && command -v curl >/dev/null 2>&1; then
     local existing_cats=$(command tr '\n' ',' < "$ZS_DATA_DIR/categories.txt" 2>/dev/null)
     local prompt="Com base nestes comandos de terminal (já sanitizados), responda APENAS no formato CATEGORIA|TITULO_CURTO (máx 50 chars). Categorias existentes: ${existing_cats}. Comandos: ${summary_cmds}"
@@ -882,7 +921,6 @@ _zs_ai_categorize() {
     fi
   fi
 
-  # Heuristic fallback when offline or no API key is configured
   local auto_cat="Terminal"
   if print -r -- "$summary_cmds" | command grep -Eq 'docker|kubectl|helm|terraform|systemctl|nginx'; then
     auto_cat="DevOps"
@@ -1077,47 +1115,163 @@ _zs_open_tui() {
 }
 
 # ------------------------------------------------------------------------------
-# 11. Main CLI Dispatcher: `zs`
+# 11. Complete Help Guide (-h / --help / help)
+# ------------------------------------------------------------------------------
+_zs_print_help() {
+  cat <<'EOF'
+================================================================================
+💬 zs (zsh-sessions) — Gerenciador de Sessões/Conversas de Terminal (Oh My Zsh)
+================================================================================
+
+USO:
+  zs [comando] [argumentos]
+  zs -h | --help | help
+
+--------------------------------------------------------------------------------
+1. COMANDOS PRINCIPAIS
+--------------------------------------------------------------------------------
+  zs                         Abre o painel interativo (tela dividida com fzf)
+  zs -h, zs --help, zs help  Exibe este guia completo com todos os exemplos
+  zs status                  Mostra os dados da sessão atual (UUIDv7, pasta,
+                             categoria, título, quantidade de comandos e diffs)
+  zs show [session_id]       Exibe a conversa completa (comandos, saídas e diffs
+                             coloridos) da sessão atual ou do ID informado
+  zs resume <session_id>     Retoma uma sessão anterior (faz 'cd' para a última
+                             pasta da sessão e continua gravando na mesma thread)
+  zs rename "<título>" [id]  Altera o título da sessão atual (ou do ID informado)
+  zs rm <session_id>         Remove permanentemente uma sessão salva
+
+--------------------------------------------------------------------------------
+2. GESTÃO DE CATEGORIAS (100% Manual ou com IA)
+--------------------------------------------------------------------------------
+  zs cat                     Abre o menu interativo para classificar a sessão
+                             atual em uma categoria existente ou criar uma nova
+  zs cat add "<nome>"        Cria uma nova categoria (ex.: DevOps, Rede, Bugfix)
+  zs cat list                Lista todas as categorias e quantas sessões há nelas
+  zs cat set "<cat>" [id]    Atribui diretamente uma categoria à sessão atual
+                             (ou à sessão do ID informado)
+  zs ai [session_id]         Classifica e gera título automaticamente usando IA
+                             (se GEMINI_API_KEY estiver definida) ou heurística
+
+--------------------------------------------------------------------------------
+3. ATALHOS DENTRO DO PAINEL INTERATIVO (fzf)
+--------------------------------------------------------------------------------
+  Enter       Retoma a sessão selecionada (entra na pasta e continua a conversa)
+  Tab         Abre o Menu de Ações (Ver, Retomar, Categoria, Renomear, IA, Excluir)
+  Ctrl + T    Mudar ou criar uma Categoria para a sessão selecionada
+  Ctrl + R    Renomear o título da sessão selecionada
+  Ctrl + F    Alternar filtro (Todas -> Projeto Atual -> Filtrar por Categoria)
+  Ctrl + A    Classificar automaticamente com IA / Heurística
+  Ctrl + X    Excluir a sessão selecionada
+  Ctrl + U/D  Rolar a conversa (painel da direita) para cima / para baixo
+  Esc / ^C    Sair do painel sem fazer alterações
+
+--------------------------------------------------------------------------------
+4. EXEMPLOS PRÁTICOS DO DIA A DIA
+--------------------------------------------------------------------------------
+  # Exemplo 1: Abrir o painel visual para procurar e retomar uma sessão antiga
+  zs
+
+  # Exemplo 2: Criar suas categorias de trabalho habituais
+  zs cat add "Rede & Roteadores"
+  zs cat add "DevOps & Docker"
+  zs cat add "Backups"
+
+  # Exemplo 3: Listar todas as suas categorias e ver sessões pendentes
+  zs cat list
+
+  # Exemplo 4: Classificar a sessão que você está usando agora
+  zs cat
+  # (ou diretamente):
+  zs cat set "Rede & Roteadores"
+
+  # Exemplo 5: Dar um nome fácil de lembrar para a sessão atual
+  zs rename "Backup dos switches S6730 e roteador M4"
+
+  # Exemplo 6: Ver todo o histórico (comandos, saídas e diffs .yml) da aba atual
+  zs show
+
+  # Exemplo 7: Pedir para a IA categorizar e dar título para a sessão atual
+  zs ai
+
+  # Exemplo 8: Executar um comando sensível SEM gravar na sessão (espaço antes)
+   export MINHA_SENHA="123"   # (com um espaço em branco no início da linha)
+
+--------------------------------------------------------------------------------
+5. VARIÁVEIS DE CONFIGURAÇÃO (no seu ~/.zshrc)
+--------------------------------------------------------------------------------
+  export ZS_CAPTURE_OUTPUT=1        # 1 = grava saídas stdout/stderr; 0 = só comandos e diffs
+  export ZS_MAX_OUTPUT_LINES=60     # Máximo de linhas de saída salvas por comando
+  export ZS_MIN_MEANINGFUL_CMDS=2   # Mínimo de comandos relevantes (Regra Zero Lixo)
+  export ZS_BINDKEY="^G"            # Atalho opcional (ex: Ctrl+G) para abrir o 'zs'
+================================================================================
+EOF
+}
+
+# ------------------------------------------------------------------------------
+# 12. Main CLI Dispatcher: `zs`
 # ------------------------------------------------------------------------------
 zs() {
-  # If invoked inside a multi-line paste after other commands, flush pending capture first
-  if (( _ZS_REDIRECT_ACTIVE == 1 )) || [[ -n "$_ZS_ACTIVE_CMD" ]]; then
+  # Ensure TTY is restored and flush pending capture if pasted in a block
+  _zs_restore_tty
+  if [[ -n "$_ZS_ACTIVE_CMD" ]]; then
     _zs_precmd
   fi
+
   local subcmd="${1:-ui}"
   (( $# > 0 )) && shift
 
+  # Support -h / --help anywhere as first arg to subcmd too
+  if [[ "$subcmd" == "-h" || "$subcmd" == "--help" || "$subcmd" == "help" ]]; then
+    _zs_print_help
+    return 0
+  fi
+
   case "$subcmd" in
     ui|list|ls)
+      if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+        _zs_print_help
+        return 0
+      fi
       _zs_open_tui "$@"
       ;;
     cat|category)
       local action="${1:-choose}"
+      if [[ "$action" == "-h" || "$action" == "--help" ]]; then
+        _zs_print_help
+        return 0
+      fi
       (( $# > 0 )) && shift
       case "$action" in
-        add)  _zs_cat_add "$@" ;;
+        add)     _zs_cat_add "$@" ;;
         list|ls) _zs_cat_list ;;
-        set)  _zs_cat_set "$@" ;;
+        set)     _zs_cat_set "$@" ;;
         choose|*) _zs_interactive_choose_category "${1:-$ZS_SESSION_ID}" 0 ;;
       esac
       ;;
     rename|title)
+      [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]] && { _zs_print_help; return 0; }
       _zs_rename_session "$@"
       ;;
     resume|continue)
+      [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]] && { _zs_print_help; return 0; }
       _zs_resume_session "$@"
       ;;
     show|view)
+      [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]] && { _zs_print_help; return 0; }
       _zs_show_session "$@"
       ;;
     ai|auto)
+      [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]] && { _zs_print_help; return 0; }
       _zs_ai_categorize "$@"
       ;;
     rm|delete)
+      [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]] && { _zs_print_help; return 0; }
       _zs_remove_session_files "$1"
       print -r -- "✓ Sessão removida: $1"
       ;;
     status|info)
+      [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]] && { _zs_print_help; return 0; }
       print -r -- "Sessão Atual (UUIDv7): $ZS_SESSION_ID"
       print -r -- "Projeto:               ${ZS_SESSION_PROJECT:-$(_zs_detect_project)}"
       print -r -- "Categoria:             ${ZS_SESSION_CATEGORY:-Sem Categoria}"
@@ -1125,33 +1279,15 @@ zs() {
       print -r -- "Comandos gravados:     $ZS_SESSION_CMD_COUNT ($ZS_SESSION_MEANINGFUL_COUNT relevantes)"
       print -r -- "Possui diffs:          $ZS_SESSION_HAS_DIFF"
       ;;
-    help|--help|-h)
-      cat <<'EOF'
-zs (zsh-sessions) — Conversas de Terminal para Oh My Zsh
-
-Comandos:
-  zs                         Abre o painel interativo (fzf) de sessões
-  zs status                  Mostra os dados da sessão atual (UUIDv7, categoria, comandos)
-  zs show [session_id]       Exibe o histórico completo (comandos, saídas e diffs) da sessão
-  zs resume <session_id>     Retoma uma sessão anterior (restaura pasta e continua a conversa)
-  zs rename "<novo_titulo>"  Renomeia a sessão atual (ou informe o ID no 2º argumento)
-  zs cat                     Escolhe ou cria uma categoria para a sessão atual
-  zs cat add "<nome>"        Cria uma nova categoria
-  zs cat list                Lista todas as categorias e contagem de sessões
-  zs cat set "<cat>" [id]    Atribui uma categoria à sessão
-  zs ai [session_id]         Classifica e gera título via LLM (ou heurística local)
-  zs rm <session_id>         Remove uma sessão específica
-EOF
-      ;;
     *)
-      print -u2 "Subcomando desconhecido: $subcmd (use 'zs help')"
+      print -u2 "Subcomando desconhecido: $subcmd (use 'zs -h' para ver todos os comandos e exemplos)"
       return 1
       ;;
   esac
 }
 
 # ------------------------------------------------------------------------------
-# 12. Hook Registration for Interactive Shells
+# 13. Hook Registration for Interactive Shells
 # ------------------------------------------------------------------------------
 if [[ -o interactive ]]; then
   _zs_init_storage
@@ -1159,8 +1295,18 @@ if [[ -o interactive ]]; then
 
   autoload -Uz add-zsh-hook
   add-zsh-hook preexec _zs_preexec
-  add-zsh-hook precmd _zs_precmd
   add-zsh-hook zshexit _zs_on_zshexit
+
+  # Register _zs_precmd at the VERY BEGINNING of precmd_functions so /dev/tty is
+  # restored BEFORE Oh My Zsh's termsupport prints window title escape codes!
+  typeset -ga precmd_functions
+  precmd_functions=(_zs_precmd ${precmd_functions:#_zs_precmd})
+
+  # Ensure Ctrl+C (SIGINT) always restores /dev/tty immediately
+  TRAPINT() {
+    _zs_restore_tty
+    return $(( 128 + $1 ))
+  }
 
   # Override exit to prompt for category when session is meaningful & uncategorized
   exit() {

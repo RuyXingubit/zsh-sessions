@@ -291,6 +291,25 @@ else
   (( FAIL_COUNT++ )) || true
 fi
 
+print -P "\n%B=== 14. Testes da Flag -h / --help, Limpeza OSC e Bypass TUI (mtr/sudo/expect) ===%b"
+help_out=$(zs -h)
+assert_contains "$help_out" "EXEMPLOS PRÁTICOS DO DIA A DIA" "zs -h exibe todos os exemplos práticos e comandos"
+assert_contains "$help_out" "ATALHOS DENTRO DO PAINEL INTERATIVO" "zs -h exibe tabela de atalhos do fzf"
+
+cat_help_out=$(zs cat -h)
+assert_contains "$cat_help_out" "EXEMPLOS PRÁTICOS DO DIA A DIA" "zs cat -h também exibe o guia completo de ajuda"
+
+if _zs_is_interactive_tui "sudo mtr 8.8.8.8" && _zs_is_interactive_tui "mtr 1.1.1.1"; then
+  print -P "%F{green}  ✓ PASS:%f _zs_is_interactive_tui faz bypass de 'sudo' e 'mtr' mantendo TTY direto"
+  (( PASS_COUNT++ )) || true
+else
+  print -P "%F{red}  ✗ FAIL:%f _zs_is_interactive_tui falhou para sudo/mtr"
+  (( FAIL_COUNT++ )) || true
+fi
+
+curl_u_redacted=$(print -r -- "curl -s -u admin:minha_senha_ftp# ftp://10.0.0.1/file.zip" | _zs_redact_text)
+assert_not_contains "$curl_u_redacted" "minha_senha_ftp" "Mascara credenciais passadas via flag -u user:pass"
+
 print -P "\n======================================================================"
 print -P "Resultado Final: %F{green}${PASS_COUNT} passaram%f | %F{red}${FAIL_COUNT} falharam%f"
 print -P "======================================================================"
