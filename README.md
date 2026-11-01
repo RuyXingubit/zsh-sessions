@@ -15,7 +15,7 @@ plugins=(... zsh-sessions)
 Every interactive shell session automatically receives a chronological **UUIDv7** identifier. As you work, `zsh-sessions` records:
 
 1. **Command metadata:** Timestamp, working directory (`PWD`), Git branch, duration, and exit status.
-2. **Command output (`stdout`/`stderr`):** Captures CLI output (truncated to `ZS_MAX_OUTPUT_LINES`) while automatically bypassing interactive full-screen TUI applications (`vim`, `nvim`, `nano`, `less`, `htop`, `ssh`, `tmux`, `fzf`).
+2. **Safe Output Capture (`stdout`/`stderr`):** By default (`ZS_CAPTURE_MODE="safe"`), preserves `isatty(1) == true` (100% native TTY) for all interactive TUIs, REPLs, and AI CLIs (`agy`, `gemini`, `claude`, `codex`, `vim`, `nvim`, `git`, `docker`, `python`, `node`, `flutter`, `ssh`, `tmux`, `fzf`), while automatically capturing output for safe inspection commands (`cat`, `df`, `uname`, `ip`, `curl`, etc.) or on demand via `zs cap <command>`.
 3. **Edited file diffs (`Snapshot & Diff`):** When a command or editor modifies a configuration/source file (e.g., `vim docker-compose.yml`), records a clean `diff -u` block showing added (`+`) and removed (`-`) lines.
 4. **Zero-Junk Filtering:** Sessions containing only trivial navigation commands (`ls`, `cd`, `pwd`, `clear`, `exit`) with no file modifications are automatically discarded on exit.
 5. **Category Prompt on Exit:** When closing a meaningful session via `exit` that has not yet been categorized, `zs` prompts you to assign it to an existing category or create a new one on the spot. If the terminal window is closed abruptly (`SIGHUP` / <kbd>Cmd</kbd> + <kbd>W</kbd>), the session is preserved as `[Sem Categoria]` and a one-line notice is shown on the next shell startup.
@@ -27,6 +27,7 @@ Every interactive shell session automatically receives a chronological **UUIDv7*
 | `zs` | Open the interactive session threads TUI (`fzf` split view or numbered menu) |
 | `zs status` | Display current session metadata (UUIDv7, project, category, command count) |
 | `zs show [id]` | Display the full colorized timeline (commands, outputs, and file diffs) of a session |
+| `zs cap <cmd...>` | Execute any command and explicitly capture its full `stdout`/`stderr` and file diffs |
 | `zs resume <id>` | Resume a previous session (`cd` into its last directory and continue appending to that thread) |
 | `zs rename "<title>" [id]` | Set a custom title for the current or specified session |
 | `zs cat` | Interactively assign the session to an existing category or create a new one |
@@ -136,6 +137,8 @@ USO:
                              categoria, título, quantidade de comandos e diffs)
   zs show [session_id]       Exibe a conversa completa (comandos, saídas e diffs
                              coloridos) da sessão atual ou do ID informado
+  zs cap <comando...>        Executa qualquer comando gravando explicitamente sua
+                             saída completa (stdout/stderr) + diffs na sessão
   zs resume <session_id>     Retoma uma sessão anterior (faz 'cd' para a última
                              pasta da sessão e continua gravando na mesma thread)
   zs rename "<título>" [id]  Altera o título da sessão atual (ou do ID informado)
@@ -197,10 +200,15 @@ USO:
   # Exemplo 8: Executar um comando sensível SEM gravar na sessão (espaço antes)
    export MINHA_SENHA="123"   # (com um espaço em branco no início da linha)
 
+  # Exemplo 9: Capturar explicitamente a saída de qualquer comando ou script
+  zs cap docker ps --format "table {{.Names}}\t{{.Status}}"
+
 --------------------------------------------------------------------------------
 5. VARIÁVEIS DE CONFIGURAÇÃO (no seu ~/.zshrc)
 --------------------------------------------------------------------------------
-  export ZS_CAPTURE_OUTPUT=1        # 1 = grava saídas stdout/stderr; 0 = só comandos e diffs
+  export ZS_CAPTURE_OUTPUT=1        # 1 = ativa captura de saída; 0 = só comandos e diffs
+  export ZS_CAPTURE_MODE="safe"     # "safe" = allowlist segura (nunca quebra TUIs/agy); "off" = desligado
+  export ZS_SAFE_CAPTURE_CMDS=""    # Comandos extras para capturar saída no modo "safe"
   export ZS_MAX_OUTPUT_LINES=60     # Máximo de linhas de saída salvas por comando
   export ZS_MIN_MEANINGFUL_CMDS=2   # Mínimo de comandos relevantes (Regra Zero Lixo)
   export ZS_BINDKEY="^G"            # Atalho opcional (ex: Ctrl+G) para abrir o 'zs'
@@ -222,6 +230,8 @@ You can customize the plugin behavior by setting these variables in your `~/.zsh
 
 * `ZS_DATA_DIR`: Directory where session indexes and logs are stored (default: `${XDG_DATA_HOME:-$HOME/.local/share}/zsh-sessions`).
 * `ZS_CAPTURE_OUTPUT`: Set to `0` to disable `stdout`/`stderr` capture while keeping command and file diff tracking (default: `1`).
+* `ZS_CAPTURE_MODE`: Output capture strategy (`"safe"` allowlist by default so `isatty(1)` is never broken for interactive TUIs like `agy`, `git`, `python`, `node`, `docker`; `"off"` to disable automatic output capture).
+* `ZS_SAFE_CAPTURE_CMDS`: Space-separated list of additional non-interactive commands whose `stdout` should be captured automatically in `"safe"` mode.
 * `ZS_MAX_OUTPUT_LINES`: Maximum number of output lines stored per command before truncating the middle section (default: `60`).
 * `ZS_MIN_MEANINGFUL_CMDS`: Minimum number of non-trivial commands required to persist a session without diffs or manual metadata (default: `2`).
 * `ZS_BINDKEY`: Optional ZLE keyboard shortcut to launch `zs` directly from the prompt (e.g., `export ZS_BINDKEY="^G"`).

@@ -12,6 +12,8 @@ typeset -g ZS_PLUGIN_DIR="${0:h}"
 # Configuration defaults
 typeset -g ZS_DATA_DIR="${ZS_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/zsh-sessions}"
 typeset -gi ZS_CAPTURE_OUTPUT="${ZS_CAPTURE_OUTPUT:-1}"
+typeset -g ZS_CAPTURE_MODE="${ZS_CAPTURE_MODE:-safe}"
+typeset -g ZS_SAFE_CAPTURE_CMDS="${ZS_SAFE_CAPTURE_CMDS:-}"
 typeset -gi ZS_MAX_OUTPUT_LINES="${ZS_MAX_OUTPUT_LINES:-60}"
 typeset -gi ZS_MIN_MEANINGFUL_CMDS="${ZS_MIN_MEANINGFUL_CMDS:-2}"
 
@@ -156,19 +158,63 @@ _zs_is_interactive_tui() {
     return 0
   fi
   case "$first_word" in
-    vim|nvim|vi|nano|emacs|micro|less|more|man|htop|top|btop|glances|mtr|watch|tmux|screen|zellij|ssh|scp|sftp|ftp|mosh|telnet|nc|netcat|expect|fzf|zs|exit|logout|clear|reset|su|gpg|pass|claude|codex|lazygit|lazydocker|k9s|tig|ranger|mc|nnn|yazi)
+    agy|antigravity|antigravity-ide|agy-ide|gemini|claude|codex|aider|cursor|code|vim|nvim|vi|nano|emacs|micro|less|more|man|htop|top|btop|glances|mtr|watch|tmux|screen|zellij|ssh|scp|sftp|ftp|mosh|telnet|nc|netcat|expect|fzf|zs|exit|logout|clear|reset|su|gpg|pass|lazygit|lazydocker|k9s|tig|ranger|mc|nnn|yazi|python|python3|node|irb|psql|mysql|redis-cli|sqlite3|mongosh|gh|git|docker|kubectl|flutter|dart|npm|npx|yarn|pnpm|bun|brew|crontab|visudo)
       return 0
       ;;
   esac
-  # Bypass scripts or compound commands that invoke interactive ssh/expect/telnet/sudo/read
-  if [[ "$trimmed" == *(ssh|telnet|expect|ftp|sudo|vim|nano|fzf)* ]]; then
+  # Bypass scripts or compound commands that invoke interactive TUI/SSH/REPL tools
+  if [[ "$trimmed" == *(agy|antigravity|gemini|claude|codex|ssh|telnet|expect|ftp|sudo|vim|nvim|nano|fzf|less|more)* ]]; then
     return 0
   fi
   if [[ "$first_word" == (./*|*.sh) && -f "$first_word" ]]; then
-    if command grep -Eq '\b(expect|ssh|telnet|sudo|read|fzf|vim|nano)\b' "$first_word" 2>/dev/null; then
+    if command grep -Eq '\b(agy|antigravity|expect|ssh|telnet|sudo|read|fzf|vim|nvim|nano)\b' "$first_word" 2>/dev/null; then
       return 0
     fi
   fi
+  return 1
+}
+
+_zs_should_capture_stdout() {
+  local raw="$1"
+  (( ZS_CAPTURE_OUTPUT == 0 )) && return 1
+  [[ "$ZS_CAPTURE_MODE" == "off" ]] && return 1
+
+  local trimmed="${raw#"${raw%%[![:space:]]*}"}"
+  [[ -z "$trimmed" ]] && return 1
+
+  # 1. Never intercept stdout for interactive TUIs, REPLs, editors, or AI CLIs (preserves isatty(1) == true)
+  if _zs_is_interactive_tui "$trimmed"; then
+    return 1
+  fi
+
+  # 2. Never intercept stdout if command already redirects stdout or runs in background
+  if [[ "$trimmed" == *">"* || "$trimmed" == *"&"* ]]; then
+    return 1
+  fi
+
+  if [[ "$ZS_CAPTURE_MODE" == "all" ]]; then
+    return 0
+  fi
+
+  # 3. Default "safe" allowlist mode: only capture single, non-piped, pure-output inspection commands
+  if [[ "$trimmed" == *"|"* || "$trimmed" == *";"* ]]; then
+    return 1
+  fi
+
+  local first_word="${trimmed%%[[:space:]]*}"
+  case "$first_word" in
+    cat|head|tail|wc|stat|file|uname|hostname|whoami|id|groups|date|uptime|df|du|free|env|printenv|pwd|which|whereis|expr|seq|basename|dirname|tr|cut|sort|uniq|md5|md5sum|shasum|sha256sum|dig|nslookup|host|ifconfig|ip|route|arp|netstat|ss|lsof|ps|lsblk|blkid|sysctl|echo|printf|curl)
+      return 0
+      ;;
+  esac
+
+  if [[ -n "$ZS_SAFE_CAPTURE_CMDS" ]]; then
+    local ucmd
+    for ucmd in ${=ZS_SAFE_CAPTURE_CMDS}; do
+      [[ "$first_word" == "$ucmd" ]] && return 0
+    done
+  fi
+
   return 1
 }
 
@@ -521,8 +567,8 @@ _zs_preexec() {
   # 3. Snapshot files for diff tracking
   _zs_snapshot_files_before "$cmd_str"
 
-  # 4. Capture stdout/stderr for non-interactive CLI commands while writing directly to /dev/tty
-  if (( ZS_CAPTURE_OUTPUT == 1 )) && [[ -w /dev/tty ]] && ! _zs_is_interactive_tui "$cmd_str"; then
+  # 4. Capture stdout/stderr ONLY for safe allowlisted commands while keeping native TTY for all TUIs/CLIs
+  if [[ -w /dev/tty ]] && _zs_should_capture_stdout "$cmd_str"; then
     _ZS_CMD_OUT_FILE=$(command mktemp "${TMPDIR:-/tmp}/zs_out.XXXXXX" 2>/dev/null)
     if [[ -n "$_ZS_CMD_OUT_FILE" ]]; then
       command chmod 0600 "$_ZS_CMD_OUT_FILE" 2>/dev/null
@@ -604,6 +650,39 @@ zs_record_exec() {
   _ZS_LAST_CMD="$cmd_str"
 
   _zs_append_turn_to_log "$cmd_str" "$exit_code" "0s" "$captured_out" "$diff_block"
+  return $exit_code
+}
+
+# Explicit on-demand output & diff capture for any command (`zs cap <cmd...>`)
+_zs_cap_command() {
+  local cmd_str="$*"
+  if [[ -z "$cmd_str" ]]; then
+    print -u2 "Uso: zs cap <comando> [argumentos...]"
+    return 1
+  fi
+
+  integer start_ts="${EPOCHSECONDS:-0}"
+  _zs_snapshot_files_before "$cmd_str"
+
+  local out_file=$(command mktemp "${TMPDIR:-/tmp}/zs_cap.XXXXXX" 2>/dev/null)
+  command chmod 0600 "$out_file" 2>/dev/null
+
+  eval "$cmd_str" 2>&1 | command tee "$out_file"
+  local exit_code=${pipestatus[1]:-$?}
+
+  integer end_ts="${EPOCHSECONDS:-0}"
+  integer elapsed_sec=$(( end_ts - start_ts ))
+  (( elapsed_sec < 0 )) && elapsed_sec=0
+
+  local captured_out=""
+  [[ -f "$out_file" ]] && captured_out=$(< "$out_file")
+  command rm -f "$out_file" 2>/dev/null
+
+  local diff_block
+  diff_block=$(_zs_collect_diffs_after)
+
+  _ZS_LAST_CMD="$cmd_str"
+  _zs_append_turn_to_log "$cmd_str" "$exit_code" "${elapsed_sec}s" "$captured_out" "$diff_block"
   return $exit_code
 }
 
@@ -1136,6 +1215,8 @@ USO:
                              categoria, título, quantidade de comandos e diffs)
   zs show [session_id]       Exibe a conversa completa (comandos, saídas e diffs
                              coloridos) da sessão atual ou do ID informado
+  zs cap <comando...>        Executa qualquer comando gravando explicitamente sua
+                             saída completa (stdout/stderr) + diffs na sessão
   zs resume <session_id>     Retoma uma sessão anterior (faz 'cd' para a última
                              pasta da sessão e continua gravando na mesma thread)
   zs rename "<título>" [id]  Altera o título da sessão atual (ou do ID informado)
@@ -1197,10 +1278,15 @@ USO:
   # Exemplo 8: Executar um comando sensível SEM gravar na sessão (espaço antes)
    export MINHA_SENHA="123"   # (com um espaço em branco no início da linha)
 
+  # Exemplo 9: Capturar explicitamente a saída de qualquer comando ou script
+  zs cap docker ps --format "table {{.Names}}\t{{.Status}}"
+
 --------------------------------------------------------------------------------
 5. VARIÁVEIS DE CONFIGURAÇÃO (no seu ~/.zshrc)
 --------------------------------------------------------------------------------
-  export ZS_CAPTURE_OUTPUT=1        # 1 = grava saídas stdout/stderr; 0 = só comandos e diffs
+  export ZS_CAPTURE_OUTPUT=1        # 1 = ativa captura de saída; 0 = só comandos e diffs
+  export ZS_CAPTURE_MODE="safe"     # "safe" = allowlist segura (nunca quebra TUIs/agy); "off" = desligado
+  export ZS_SAFE_CAPTURE_CMDS=""    # Comandos extras para capturar saída no modo "safe"
   export ZS_MAX_OUTPUT_LINES=60     # Máximo de linhas de saída salvas por comando
   export ZS_MIN_MEANINGFUL_CMDS=2   # Mínimo de comandos relevantes (Regra Zero Lixo)
   export ZS_BINDKEY="^G"            # Atalho opcional (ex: Ctrl+G) para abrir o 'zs'
@@ -1260,6 +1346,10 @@ zs() {
     show|view)
       [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]] && { _zs_print_help; return 0; }
       _zs_show_session "$@"
+      ;;
+    cap|run)
+      [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]] && { _zs_print_help; return 0; }
+      _zs_cap_command "$@"
       ;;
     ai|auto)
       [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]] && { _zs_print_help; return 0; }

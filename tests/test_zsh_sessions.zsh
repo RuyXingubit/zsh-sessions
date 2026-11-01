@@ -310,6 +310,35 @@ fi
 curl_u_redacted=$(print -r -- "curl -s -u admin:minha_senha_ftp# ftp://10.0.0.1/file.zip" | _zs_redact_text)
 assert_not_contains "$curl_u_redacted" "minha_senha_ftp" "Mascara credenciais passadas via flag -u user:pass"
 
+print -P "\n%B=== 15. Testes da Allowlist Segura (ZS_CAPTURE_MODE=safe), Proteção de TTY (agy/git/REPLs) e 'zs cap' ===%b"
+if ! _zs_should_capture_stdout "agy" && \
+   ! _zs_should_capture_stdout "antigravity" && \
+   ! _zs_should_capture_stdout "git commit" && \
+   ! _zs_should_capture_stdout "python3" && \
+   ! _zs_should_capture_stdout "node" && \
+   ! _zs_should_capture_stdout "flutter run" && \
+   ! _zs_should_capture_stdout "cat file.txt | agy"; then
+  print -P "%F{green}  ✓ PASS:%f Allowlist segura mantém TTY 100%% nativo (isatty=true) para agy, git, python3, node e flutter"
+  (( PASS_COUNT++ )) || true
+else
+  print -P "%F{red}  ✗ FAIL:%f Allowlist segura interceptou comando interativo indevidamente"
+  (( FAIL_COUNT++ )) || true
+fi
+
+if _zs_should_capture_stdout "uname -a" && _zs_should_capture_stdout "df -h"; then
+  print -P "%F{green}  ✓ PASS:%f Allowlist segura permite captura automática de comandos puros de inspeção (uname, df)"
+  (( PASS_COUNT++ )) || true
+else
+  print -P "%F{red}  ✗ FAIL:%f Allowlist segura bloqueou comando puro de inspeção"
+  (( FAIL_COUNT++ )) || true
+fi
+
+_zs_start_new_session
+cap_sid="$ZS_SESSION_ID"
+zs cap "echo 'Saida capturada sob demanda via zs cap'" >/dev/null
+cap_log=$(< "$ZS_DATA_DIR/sessions/$cap_sid.log")
+assert_contains "$cap_log" "Saida capturada sob demanda via zs cap" "zs cap grava explicitamente a saída de qualquer comando sob demanda"
+
 print -P "\n======================================================================"
 print -P "Resultado Final: %F{green}${PASS_COUNT} passaram%f | %F{red}${FAIL_COUNT} falharam%f"
 print -P "======================================================================"

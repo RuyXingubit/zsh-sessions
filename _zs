@@ -11,6 +11,7 @@ _zs() {
     'list:List saved terminal sessions'
     'status:Show active session metadata (UUIDv7, category, command count)'
     'show:Display full session timeline (commands, outputs, and file diffs)'
+    'cap:Execute a command and explicitly capture its full stdout/stderr and file diffs'
     'resume:Resume a previous session (restore directory and thread)'
     'rename:Rename a session title'
     'cat:Manage or assign session categories'
