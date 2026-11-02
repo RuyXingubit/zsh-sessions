@@ -72,3 +72,17 @@ Um plugin nativo para **Oh My Zsh / Zsh** que transforma as sessões diárias do
 2. **Lista Negra de Arquivos Sensíveis:** Arquivos como `.env`, `.env.*`, `*.pem`, `*.key`, `id_rsa*`, `id_ed25519*`, `*credentials*`, `.netrc` **nunca** têm o conteúdo do diff gravado (registra-se apenas `🔒 [Arquivo sensível editado: <nome> — diff omitido por segurança]`).
 3. **Motor de Redaction (Mascaramento):** Qualquer saída de comando, argumento ou diff contendo chaves sensíveis (`password`, `passwd`, `secret`, `token`, `api_key`, `apikey`, `access_key`, `private_key`, `authorization`, `bearer`) ou formatos de tokens (`ghp_`, `sk-`, `AKIA`, `AIza`, JWT `eyJ`) tem seu valor substituído por `[REDACTED]` antes de tocar o disco.
 4. **Respeito ao Espaço Inicial:** Comandos iniciados por espaço em branco são ignorados pelo gravador.
+
+
+---
+
+## 7. Evolução v2 (EGM Brainstorm & Design Consolidado)
+
+1. **Allowlist Segura de TTY (`ZS_CAPTURE_MODE="safe"`) & `zs cap <cmd>`:** Preserva `isatty(1) == true` (100% TTY nativo) para todas as aplicações interativas (`agy`, `git`, `python`, `node`, `flutter`, `docker`, `vim`) e adiciona `zs cap` para captura explícita sob demanda.
+2. **Internacionalização Automática (`EN` / `PT-BR`):** Padrão em Inglês para conformidade oficial com o repositório `ohmyzsh/ohmyzsh` (PR #14220) e detecção automática `0-fork` para Português em ambientes `pt_*` (ou via `ZS_LANG`), mantendo compatibilidade retroativa bilateral entre `"Sem Categoria"` e `"Uncategorized"`.
+3. **Busca Full-Text nas Conversas (`zs search <termo>` e `Ctrl+S` no `fzf`):** Pesquisa em todos os arquivos `sessions/*.log` (comandos, saídas e diffs).
+4. **Resolução Segura de Prefixos/Sufixos Curtos de UUIDv7 (`_zs_resolve_sid`):** Aceita prefixos ou sufixos únicos em todos os subcomandos, bloqueando *path traversal* (`/` ou `..`) e avisando em caso de prefixos ambíguos.
+5. **Monitoramento Nível 1 do `$PWD` via `zstat` (`0-fork`):** Detecta alterações e novos arquivos `.yml`, `.yaml`, `.json`, `.conf`, `.toml`, `.ini`, `.xml`, `.properties` editados dentro do `vim`/`nvim` aberto sem argumentos na linha de comando.
+6. **Injeção de Histórico na Seta `↑` (`print -S` no `zs resume`):** Empilha os comandos da sessão retomada no histórico interativo da aba atual.
+7. **Sincronização Atômica Low-Fork do `index.tsv` (`.index.lock`):** Elimina condições de corrida entre abas simultâneas usando diretório de lock POSIX e leitura/escrita em Zsh puro.
+8. **Exportação de Runbook em Markdown (`zs export [id] [arquivo.md]`):** Exporta a conversa completa formatada em Markdown com blocos `zsh`, `text` e `diff` sanitizados com `[REDACTED]`.

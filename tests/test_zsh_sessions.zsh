@@ -8,6 +8,7 @@ setopt ERR_EXIT PIPE_FAIL
 
 TEST_ROOT=$(mktemp -d "${${TMPDIR:-/tmp}%/}/zs_unit_tests.XXXXXX")
 export ZS_DATA_DIR="$TEST_ROOT/data"
+export ZS_LANG="pt"
 WORKSPACE_TMP="$TEST_ROOT/workspace"
 mkdir -p "$WORKSPACE_TMP"
 
@@ -338,6 +339,107 @@ cap_sid="$ZS_SESSION_ID"
 zs cap "echo 'Saida capturada sob demanda via zs cap'" >/dev/null
 cap_log=$(< "$ZS_DATA_DIR/sessions/$cap_sid.log")
 assert_contains "$cap_log" "Saida capturada sob demanda via zs cap" "zs cap grava explicitamente a saída de qualquer comando sob demanda"
+
+print -P "\n%B=== 16. Testes de Internacionalização Dinâmica (EN / PT-BR) e Compatibilidade Retroativa ===%b"
+en_help=$(ZS_LANG="en" zs -h)
+assert_contains "$en_help" "PRACTICAL EXAMPLES" "ZS_LANG=en exibe guia de ajuda em Inglês (padrão Oh My Zsh)"
+en_status=$(ZS_LANG="en" zs status)
+assert_contains "$en_status" "Active Session (UUIDv7):" "ZS_LANG=en exibe status em Inglês"
+
+if _zs_is_uncategorized_val "Sem Categoria" && _zs_is_uncategorized_val "Uncategorized"; then
+  print -P "%F{green}  ✓ PASS:%f Compatibilidade retroativa reconhece 'Sem Categoria' e 'Uncategorized'"
+  (( PASS_COUNT++ )) || true
+else
+  print -P "%F{red}  ✗ FAIL:%f Falha na compatibilidade de categoria padrão"
+  (( FAIL_COUNT++ )) || true
+fi
+
+print -P "\n%B=== 17. Testes de Resolução de UUIDv7 Curto (Prefixo/Sufixo), Ambiguidade e Path Traversal ===%b"
+short_suffix="${active_sid[-6,-1]}"
+resolved_by_suffix=$(_zs_resolve_sid "$short_suffix" 0)
+assert_eq "$active_sid" "$resolved_by_suffix" "Resolve sessão corretamente pelos últimos 6 caracteres do UUIDv7 ($short_suffix)"
+
+if _zs_resolve_sid "../etc/passwd" 0 2>/dev/null; then
+  print -P "%F{red}  ✗ FAIL:%f _zs_resolve_sid permitiu path traversal"
+  (( FAIL_COUNT++ )) || true
+else
+  print -P "%F{green}  ✓ PASS:%f _zs_resolve_sid bloqueia tentativa de path traversal (../)"
+  (( PASS_COUNT++ )) || true
+fi
+
+# Prefixos curtos compartilhados entre múltiplas sessões devem ser rejeitados por ambiguidade
+common_prefix="${active_sid[1,4]}"
+if _zs_resolve_sid "$common_prefix" 0 2>/dev/null; then
+  print -P "%F{red}  ✗ FAIL:%f _zs_resolve_sid deveria rejeitar prefixo ambíguo ($common_prefix)"
+  (( FAIL_COUNT++ )) || true
+else
+  print -P "%F{green}  ✓ PASS:%f _zs_resolve_sid detecta e rejeita prefixo ambíguo que bate com múltiplas sessões"
+  (( PASS_COUNT++ )) || true
+fi
+
+print -P "\n%B=== 18. Testes de Snapshot Nível 1 do \$PWD via zstat (Edição sem Argumento na CLI) ===%b"
+_zs_start_new_session
+dir_snap_sid="$ZS_SESSION_ID"
+cd "$WORKSPACE_TMP"
+echo "mode: production" > bare_editor_config.yml
+
+# Simula edição feita por dentro do nvim/script sem passar 'bare_editor_config.yml' na linha de comando analisada
+modify_without_arg() {
+  local target="bare_editor_config"
+  echo "mode: staging\napi_token: secret_tok_987654" > "${target}.yml"
+  echo "created_inside: true" > "${target}_new.toml"
+}
+zs_record_exec "modify_without_arg"
+
+dir_snap_log=$(< "$ZS_DATA_DIR/sessions/$dir_snap_sid.log")
+assert_contains "$dir_snap_log" "📝 Diff em bare_editor_config.yml:" "Detecta diff de arquivo .yml no \$PWD mesmo sem o nome nos argumentos da CLI"
+assert_contains "$dir_snap_log" "+mode: staging" "Registra linha modificada em bare_editor_config.yml"
+assert_not_contains "$dir_snap_log" "secret_tok_987654" "Mascara segredo em arquivo detectado via nível 1 do \$PWD"
+assert_contains "$dir_snap_log" "📝 Diff em bare_editor_config_new.toml:" "Detecta arquivo .toml recém-criado no \$PWD durante a execução"
+
+print -P "\n%B=== 19. Teste de Injeção de Histórico na Seta ↑ (print -S) ao Executar 'zs resume' ===%b"
+_zs_start_new_session
+hist_sid="$ZS_SESSION_ID"
+_zs_append_turn_to_log "kubectl get pods -nproduction" 0 "1s" "" ""
+_zs_start_new_session
+zs resume "${hist_sid[-6,-1]}" >/dev/null
+last_hist_entry=$(fc -l -1 2>/dev/null || history -1 2>/dev/null || true)
+assert_contains "$last_hist_entry" "kubectl get pods -nproduction" "zs resume injeta comandos da sessão retomada na pilha de histórico (print -S)"
+
+print -P "\n%B=== 20. Testes de Busca Full-Text nas Conversas ('zs search') ===%b"
+search_out=$(zs search "127.0.0.1:6379")
+assert_contains "$search_out" "$active_sid" "zs search encontra sessão buscando por IP/porta dentro do diff"
+assert_contains "$search_out" "127.0.0.1:6379" "zs search exibe a linha correspondente encontrada no log"
+
+if zs search "termo_inexistente_xyz_999" >/dev/null 2>&1; then
+  print -P "%F{red}  ✗ FAIL:%f zs search deveria retornar código != 0 quando não há resultados"
+  (( FAIL_COUNT++ )) || true
+else
+  print -P "%F{green}  ✓ PASS:%f zs search retorna exit code 1 quando nenhum resultado é encontrado"
+  (( PASS_COUNT++ )) || true
+fi
+
+print -P "\n%B=== 21. Testes de Exportação de Runbook em Markdown ('zs export') ===%b"
+export_md_file="$TEST_ROOT/runbook_export.md"
+zs export "${active_sid[-6,-1]}" "$export_md_file" >/dev/null
+export_content=$(< "$export_md_file")
+assert_contains "$export_content" "# Ajuste de portas Redis no docker-compose" "zs export gera cabeçalho H1 com o título da sessão"
+assert_contains "$export_content" '```zsh' "zs export gera blocos de código zsh para os comandos"
+assert_contains "$export_content" '```diff' "zs export gera blocos diff com syntax highlighting"
+assert_not_contains "$export_content" "segredo_real_999" "zs export garante redaction [REDACTED] no arquivo Markdown exportado"
+
+print -P "\n%B=== 22. Testes de Lock Atômico (.index.lock) e Recuperação de Lock Órfão ===%b"
+mkdir -p "$ZS_DATA_DIR/.index.lock"
+# Simula lock antigo (> 2 segundos atrás) via touch
+touch -t 202001010000 "$ZS_DATA_DIR/.index.lock" 2>/dev/null || true
+if _zs_acquire_index_lock; then
+  _zs_release_index_lock
+  print -P "%F{green}  ✓ PASS:%f _zs_acquire_index_lock recupera lock órfão automaticamente e libera sem erros"
+  (( PASS_COUNT++ )) || true
+else
+  print -P "%F{red}  ✗ FAIL:%f _zs_acquire_index_lock falhou ao recuperar lock órfão"
+  (( FAIL_COUNT++ )) || true
+fi
 
 print -P "\n======================================================================"
 print -P "Resultado Final: %F{green}${PASS_COUNT} passaram%f | %F{red}${FAIL_COUNT} falharam%f"
